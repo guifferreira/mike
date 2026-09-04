@@ -295,11 +295,14 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     } | null>(null);
     const editingChatTitle =
         chatTitleEdit?.chatId === activeChatId ? chatTitleEdit : null;
-    const [chatOwnerId, setChatOwnerId] = useState<string | null>(null);
     const [ownerOnlyAction, setOwnerOnlyAction] = useState<string | null>(null);
     const [editorGateAction, setEditorGateAction] = useState<string | null>(
         null,
     );
+    const [chatActionError, setChatActionError] = useState<{
+        title: string;
+        message: string;
+    } | null>(null);
     const [chatLoaded, setChatLoaded] = useState(false);
     const [deletingChat, setDeletingChat] = useState(false);
     const [composerResetKey, setComposerResetKey] = useState(0);
@@ -414,7 +417,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     }, [chats, projectChats, projectId]);
 
     // Server ladder: writing to a project chat needs content.edit on the
-    // project, except that the chat's own creator may always continue it.
+    // project.
     //
     // While the project, chat owner, or session is loading, access is unknown,
     // and unknown is neither a licence nor a refusal. Treating it as a licence
@@ -426,10 +429,16 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const projectRole = roleFromLoaded(project);
     const canEditContent = can(projectRole, "content.edit");
     const canManageProject = can(projectRole, "access.manage");
-    // The chat's own creator keeps writing to it whatever their project role,
-    // because the server puts a row's creator at the top of that row's ladder.
-    const canSendChat =
-        canEditContent || (!!chatOwnerId && chatOwnerId === user?.id);
+    // There is no creator exception on a PROJECT chat. The server derives the
+    // caller's whole standing here from the project role
+    // (ensureSharedRowAccess): content.edit to write or rename, and
+    // container.delete to delete. Adding "…or I started this thread" to the
+    // client made all three gates disagree with the server in both
+    // directions — an editor who created the chat was offered a Delete that
+    // came back 403, and a viewer demoted after starting a thread kept a live
+    // composer on it. The ladder is the only answer this page asks for.
+    const canSendChat = canEditContent;
+    const canDeleteChat = can(projectRole, "container.delete");
     const composerReady = chatLoaded && projectLoaded && !authLoading;
     const pendingInitialUserMessageRef = useRef<Message | null>(
         initialMessages.length === 1 && initialMessages[0].role === "user"
@@ -604,7 +613,6 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             .then(({ chat, messages: loaded }) => {
                 if (cancelled) return;
                 setChatTitle(chat.title);
-                setChatOwnerId(chat.user_id ?? null);
                 setChatModel(chat.model ?? null);
                 setChatReasoningLevel(chat.reasoning_level ?? null);
                 setMessages(loaded);
@@ -852,14 +860,27 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
     async function handleDeleteChat() {
         if (!activeChatId) return;
-        if (chatOwnerId && user?.id && chatOwnerId !== user.id) {
-            setOwnerOnlyAction("delete this chat");
+        if (!canDeleteChat) {
+            // Only accuse somebody of lacking a role once we know they do:
+            // `projectRole` is null for the whole load window, and a refusal
+            // popup raised then is a guess.
+            if (projectRole) setOwnerOnlyAction("delete this chat");
             return;
         }
         setDeletingChat(true);
         try {
             await deleteChat(activeChatId);
             router.push(`/projects/${projectId}/assistant`);
+        } catch (error) {
+            // Without this the refusal was an unhandled rejection and the
+            // page just sat there, indistinguishable from a slow delete.
+            setChatActionError({
+                title: "Chat not deleted",
+                message: userFacingApiError(
+                    error,
+                    "The chat could not be deleted. Please try again.",
+                ),
+            });
         } finally {
             setDeletingChat(false);
         }
@@ -867,8 +888,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
 
     async function handleRenameChat(nextTitle?: string) {
         if (!activeChatId) return;
-        if (chatOwnerId && user?.id && chatOwnerId !== user.id) {
-            setOwnerOnlyAction("rename this chat");
+        if (!canEditContent) {
+            if (projectRole) setEditorGateAction("rename this chat");
             return;
         }
         if (nextTitle === undefined) {
@@ -890,7 +911,11 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         );
         try {
             await renameChatInHistory(activeChatId, trimmed);
-        } catch {
+        } catch (error) {
+            // ChatHistoryContext rethrows so the calling surface can speak.
+            // Unhandled, the header title stayed changed while the switcher
+            // row snapped back — the user saw two different titles and no
+            // reason for either.
             if (activeChatIdRef.current === activeChatId) {
                 setChatTitle((current) =>
                     current === trimmed ? previousTitle : current,
@@ -903,6 +928,13 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                         : chat,
                 ),
             );
+            setChatActionError({
+                title: "Chat not renamed",
+                message: userFacingApiError(
+                    error,
+                    "The chat could not be renamed. Please try again.",
+                ),
+            });
         }
     }
 
@@ -2079,6 +2111,12 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 requiredRole="editor"
                 contacts={project?.admin_contacts}
                 onClose={() => setEditorGateAction(null)}
+            />
+            <WarningPopup
+                open={!!chatActionError}
+                title={chatActionError?.title}
+                message={chatActionError?.message}
+                onClose={() => setChatActionError(null)}
             />
             <ConfirmPopup
                 open={!!pendingDeleteFolder}
