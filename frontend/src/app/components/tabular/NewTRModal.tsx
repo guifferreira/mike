@@ -42,6 +42,12 @@ const TABULAR_DIRECTORY_TABS = ["files", "projects"] as const;
 interface Props {
     open: boolean;
     onClose: () => void;
+    /**
+     * Creates the review. Resolving with a string means the review itself was
+     * created but part of the request was not honoured — the dialog stays open
+     * and shows that message, and pressing Create again retries the remainder
+     * against the same review rather than making a second one.
+     */
     onAdd: (
         title: string,
         projectId: string | undefined,
@@ -50,7 +56,7 @@ interface Props {
         documentGrouping: "document" | "folder" | undefined,
         model: string,
         accessAssignments: { email: string; role: AccessAssignmentRole }[],
-    ) => Promise<void> | void;
+    ) => Promise<string | void> | void;
     projects?: Project[];
     /** When provided, skip the project/directory picker and show only these docs */
     projectDocs?: Document[];
@@ -202,6 +208,15 @@ export function NewTRModal({
 
     if (!open) return null;
 
+    // Dismissal — Escape, the backdrop and the close button all arrive here.
+    // A create in flight owns the dialog: leaving now would strand the only
+    // account of what happened to it. The success path calls `handleClose`
+    // directly, which is why the guard lives here and not there.
+    function handleDismiss() {
+        if (creatingRef.current) return;
+        handleClose();
+    }
+
     function handleClose() {
         setStep("details");
         setTitle("");
@@ -242,6 +257,7 @@ export function NewTRModal({
         if (creatingRef.current) return;
         creatingRef.current = true;
         setCreating(true);
+        setUploadError(null);
         const selectedWorkflow = workflows.find(
             (w) => w.id === selectedWorkflowId,
         );
@@ -252,7 +268,7 @@ export function NewTRModal({
               : undefined;
         const assignments = effectiveProjectId ? [] : directGrants;
         try {
-            await onAdd(
+            const partialFailure = await onAdd(
                 title.trim(),
                 effectiveProjectId,
                 selectedDocuments.length > 0
@@ -263,6 +279,13 @@ export function NewTRModal({
                 selectedModel,
                 assignments,
             );
+            if (partialFailure) {
+                // The review exists. Report what did not happen and stay open;
+                // closing here would hide the only account of it, and the
+                // generic create failure would be a lie.
+                setUploadError(partialFailure);
+                return;
+            }
             handleClose();
         } catch (error) {
             setUploadError(
@@ -402,7 +425,7 @@ export function NewTRModal({
     return (
         <Modal
             open={open}
-            onClose={handleClose}
+            onClose={handleDismiss}
             breadcrumbs={[
                 ...breadcrumbs,
                 step === "details"
