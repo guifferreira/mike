@@ -12,7 +12,6 @@ import {
 import {
   checkProjectAccess,
   getOrgRole,
-  listUserOrgIds,
 } from "../../lib/access";
 import { can } from "../../lib/permissions";
 import {
@@ -221,20 +220,78 @@ export async function searchProjectDirectory(
     }
   }
   // Third access branch (multi-tenant): projects in an org the caller belongs
-  // to are searchable, mirroring listAccessibleProjectIds and the overview
-  // RPCs — otherwise the document picker would hide org content the project
-  // list shows.
-  const orgIds = await listUserOrgIds(userId, db);
-  if (orgIds.length > 0) {
-    projectQueries.push(db.from("projects").select("*").in("org_id", orgIds));
+  // to are searchable, otherwise the document picker would hide org content
+  // the project list shows. Membership alone is not the verdict, though:
+  // every other path resolves the project through checkProjectAccess /
+  // project_access_role, which return "no access" for a per-project deny
+  // override. Without the same filter here the picker hands a walled-off
+  // member the matter's name, cm_number and its document filenames.
+  const { data: membershipRows, error: membershipError } = await db
+    .from("org_members")
+    .select("org_id, role")
+    .eq("user_id", userId);
+  if (membershipError) return { ok: false, error: membershipError };
+  const orgRoleByOrgId = new Map<string, string>();
+  for (const row of (membershipRows ?? []) as {
+    org_id?: string | null;
+    role?: string | null;
+  }[]) {
+    if (row.org_id) orgRoleByOrgId.set(row.org_id, row.role ?? "");
   }
-  const projectResults = await Promise.all(projectQueries);
-  const projectError = projectResults.find((result) => result.error)?.error;
+  const orgIds = [...orgRoleByOrgId.keys()];
+  const [projectResults, orgProjectsResult] = await Promise.all([
+    Promise.all(projectQueries),
+    orgIds.length > 0
+      ? db.from("projects").select("*").in("org_id", orgIds)
+      : Promise.resolve({
+          data: [] as Record<string, unknown>[],
+          error: null,
+        }),
+  ]);
+  const projectError =
+    projectResults.find((result) => result.error)?.error ??
+    orgProjectsResult.error;
   if (projectError) return { ok: false, error: projectError };
   const projectsById = new Map<string, Record<string, unknown>>();
   for (const result of projectResults) {
     for (const project of result.data ?? []) {
       projectsById.set(project.id as string, project);
+    }
+  }
+  const orgProjects = (orgProjectsResult.data ?? []) as Record<
+    string,
+    unknown
+  >[];
+  if (orgProjects.length > 0) {
+    // One batched read for the whole page, not a verdict per row: this is a
+    // filter over a result set and must not become an N+1. Mirrors
+    // listOrgResources, including its exemptions — the creator and org
+    // admins keep Owner and cannot be denied.
+    const candidateIds = orgProjects
+      .map((project) => project.id)
+      .filter((id): id is string => typeof id === "string");
+    const { data: denialRows, error: denialError } = await db
+      .from("project_org_access_overrides")
+      .select("project_id")
+      .in("project_id", candidateIds)
+      .eq("user_id", userId)
+      .eq("role", "deny");
+    // Fail closed: an unreadable override table must hide rows, never reveal
+    // them.
+    if (denialError) return { ok: false, error: denialError };
+    const deniedProjectIds = new Set(
+      ((denialRows ?? []) as { project_id?: string | null }[])
+        .map((row) => row.project_id)
+        .filter((id): id is string => !!id),
+    );
+    for (const project of orgProjects) {
+      const projectId = project.id as string;
+      const orgId = project.org_id as string | null;
+      const isCreator = project.user_id === userId;
+      const isOrgAdmin = !!orgId && orgRoleByOrgId.get(orgId) === "admin";
+      if (!isCreator && !isOrgAdmin && deniedProjectIds.has(projectId))
+        continue;
+      projectsById.set(projectId, project);
     }
   }
   const accessibleProjectIds = [...projectsById.keys()];

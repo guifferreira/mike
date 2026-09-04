@@ -339,6 +339,8 @@ export async function prepareChatStream(
             userId,
             db,
             chatId,
+            "chat_messages",
+            userEmail,
         );
         const docAvailability = Object.entries(docIndex).map(([doc_id, info]) => ({
             doc_id,

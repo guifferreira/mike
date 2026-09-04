@@ -455,6 +455,10 @@ projectsRouter.post(
       switch (result.kind) {
         case "forbidden":
           return void res.status(404).json({ detail: "Project not found" });
+        // Seeing the project but not being allowed to organize it is a
+        // refusal, not a missing matter.
+        case "role_forbidden":
+          return void res.status(403).json({ detail: result.detail });
         case "doc_not_found":
           return void res.status(404).json({ detail: "Document not found" });
         case "no_active_version":
@@ -496,6 +500,8 @@ projectsRouter.patch("/:projectId/documents/:documentId", requireAuth, asyncRout
     filename: req.body?.filename,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "doc_not_found")
@@ -553,6 +559,8 @@ projectsRouter.post(
     if (!result.ok) {
       if (result.kind === "invalid_path")
         return void res.status(400).json({ detail: "Invalid folder path" });
+      if (result.kind === "role_forbidden")
+        return void res.status(403).json({ detail: result.detail });
       if (result.kind === "forbidden")
         return void res.status(404).json({ detail: "Project not found" });
       if (result.kind === "parent_not_found")
@@ -582,6 +590,8 @@ projectsRouter.post("/:projectId/folders", requireAuth, asyncRoute(async (req, r
     parent_folder_id,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "parent_not_found")
@@ -607,6 +617,8 @@ projectsRouter.patch("/:projectId/folders/:folderId", requireAuth, asyncRoute(as
     body,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "parent_not_found")
@@ -634,6 +646,8 @@ projectsRouter.delete("/:projectId/folders/:folderId", requireAuth, asyncRoute(a
     userEmail,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "not_found")
@@ -659,6 +673,8 @@ projectsRouter.patch("/:projectId/documents/:documentId/folder", requireAuth, as
     folder_id,
   });
   if (!result.ok) {
+    if (result.kind === "role_forbidden")
+      return void res.status(403).json({ detail: result.detail });
     if (result.kind === "forbidden")
       return void res.status(404).json({ detail: "Project not found" });
     if (result.kind === "folder_not_found")

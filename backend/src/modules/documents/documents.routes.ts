@@ -65,11 +65,14 @@ documentsRouter.get("/:documentId", requireAuth, asyncRoute(async (req, res) => 
 // DELETE /single-documents/:documentId
 documentsRouter.delete("/:documentId", requireAuth, asyncRoute(async (req, res) => {
     const userId = res.locals.userId as string;
+    const userEmail = res.locals.userEmail as string | undefined;
     const { documentId } = req.params;
     const db = createServerSupabase();
 
-    const result = await deleteDocument(documentId, userId, db);
+    const result = await deleteDocument(documentId, userId, db, userEmail);
     if (!result.ok) {
+        if ("kind" in result && result.kind === "forbidden")
+            return void res.status(403).json({ detail: result.detail });
         if (result.error) return void sendInternalError(res, result.error);
         return void res.status(404).json({ detail: "Document not found" });
     }
@@ -344,7 +347,9 @@ documentsRouter.patch(
             db,
         );
         if (!result.ok)
-            return void res.status(404).json({ detail: result.detail });
+            return void res
+                .status(result.status ?? 404)
+                .json({ detail: result.detail });
         res.json(result.version);
     }),
 );
@@ -433,7 +438,9 @@ async function handleEditResolution(
     );
     if (!result.ok) {
         if (result.error) return void sendInternalError(res, result.error);
-        return void res.status(404).json({ detail: result.detail });
+        return void res
+            .status(result.status ?? 404)
+            .json({ detail: result.detail });
     }
     res.json(result.body);
 }

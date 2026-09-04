@@ -20,7 +20,7 @@ import { docxToPdf } from "../../lib/convert";
 import { enqueueConversion } from "../../lib/queue/conversionQueue";
 import { contentSha256, loadActiveVersion } from "../../lib/documentVersions";
 import { creatorScopedAllowed } from "../../lib/access";
-import { can } from "../../lib/permissions";
+import { can, DOCUMENT_EDIT_FORBIDDEN } from "../../lib/permissions";
 import {
     documentSuffix,
     shouldConvertToPdf,
@@ -316,7 +316,10 @@ export async function renameVersion(
         userEmail: string | undefined;
     },
     db: Db,
-): Promise<{ ok: true; version: unknown } | { ok: false; detail: string }> {
+): Promise<
+    | { ok: true; version: unknown }
+    | { ok: false; detail: string; status?: number }
+> {
     const { documentId, versionId, rawFilename, userId, userEmail } = params;
 
     const access = await ensureDocumentAccess(
@@ -325,10 +328,11 @@ export async function renameVersion(
         userEmail,
         db,
     );
-    // A rename is a write: viewer-only shares are rejected the same way a
-    // missing document is.
-    if (!access.ok || !can(access.projectRole, "content.edit"))
-        return { ok: false, detail: "Document not found" };
+    // A document a Viewer can open has not disappeared — say so, instead of
+    // reporting the read-only tier as a missing row.
+    if (!access.ok) return { ok: false, detail: "Document not found" };
+    if (!can(access.projectRole, "content.edit"))
+        return { ok: false, status: 403, detail: DOCUMENT_EDIT_FORBIDDEN };
 
     const filename =
         typeof rawFilename === "string" && rawFilename.trim()

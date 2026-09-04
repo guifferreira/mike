@@ -62,9 +62,13 @@ export async function validateDestinationAccess(
       const projectId = destination.project_id as string;
       const access = await checkProjectAccess(projectId, userId, userEmail, db);
       // Uploading into a project is content work: a viewer can open the
-      // project but must not be able to open an upload session into it.
-      if (!access.ok || !can(access.projectRole, "content.edit"))
-        return failure(404, { detail: "Project not found" });
+      // project but must not be able to open an upload session into it. That
+      // viewer is refused, not told the project vanished.
+      if (!access.ok) return failure(404, { detail: "Project not found" });
+      if (!can(access.projectRole, "content.edit"))
+        return failure(403, {
+          detail: "You do not have permission to write in this project.",
+        });
       const folderIds = Array.from(
         new Set(
           [

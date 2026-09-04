@@ -13,7 +13,6 @@
 // DB preparation live here. `prepareChatStream` returns the prepared data the
 // route needs to run the stream; it does not stream.
 import { type Db } from "../../lib/supabase";
-import { loadProfileUsersByEmail } from "../../lib/userLookup";
 import { deleteContentGrant, listContentGrants, upsertContentGrant, type ContentAccessGrant } from "../../lib/contentAccess";
 import { listContentPeople, type ResourcePeopleResult } from "../../lib/resourcePeople";
 import { AccessibleChat } from "./chat.access";
@@ -51,16 +50,24 @@ export async function grantChatAccess(
     | { ok: false; kind: "validation"; detail: string }
     | { ok: false; kind: "db_error"; detail: string }
 > {
-    const { userById } = await loadProfileUsersByEmail(db);
+    // One creator's email, one row read. This used to scan every profile in
+    // the deployment to build two maps and then use a single entry.
+    const creatorProfile = args.chat.user_id
+        ? await db
+              .from("user_profiles")
+              .select("email")
+              .eq("user_id", args.chat.user_id)
+              .maybeSingle()
+        : null;
     return upsertContentGrant(db, {
         kind: "chat",
         resourceId: args.chatId,
         email: args.email,
         role: args.role,
         createdBy: args.userId,
-        creatorEmail: args.chat.user_id
-            ? userById.get(args.chat.user_id)?.email
-            : null,
+        creatorEmail:
+            (creatorProfile?.data as { email?: string | null } | null)?.email ??
+            null,
     });
 }
 
