@@ -750,6 +750,7 @@ export async function prepareWordChatStream(
       db,
       persistChat ? chatId : null,
       "word_chat_messages",
+      userEmail,
     );
     const activeDocumentText = args.documentContext;
     if (activeDocumentText !== undefined) {
