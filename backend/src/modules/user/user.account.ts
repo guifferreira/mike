@@ -12,6 +12,8 @@ import {
     deleteAllUserTabularReviews,
     deleteUserAccountData,
     deleteUserProjects,
+    listOrgsBlockingAccountDeletion,
+    type AccountDeletionOrgBlocker,
 } from "./user.dataCleanup";
 import { type Db, errorMessage } from "./user.shared";
 
@@ -20,8 +22,25 @@ export async function deleteUserAccount(
     userId: string,
     userEmail: string | undefined,
     token: string | undefined,
-): Promise<{ ok: true } | { ok: false; error: unknown }> {
+): Promise<
+    | { ok: true }
+    | { ok: false; kind: "org_successor_required"; blockers: AccountDeletionOrgBlocker[] }
+    | { ok: false; error: unknown }
+> {
     try {
+        // ORGANIZATIONS FIRST. An account that is the only admin of an
+        // organization which still has members or content cannot be deleted:
+        // promoting an arbitrary successor hands a firm's matters to whoever
+        // joined first (and silently clears their `deny` overrides), while
+        // removing the member outright is refused by
+        // org_member_protect_resource_ownership and leaves the organization
+        // memberless, invisible and undeletable. Answer 409 and let the user
+        // choose a successor. This check runs BEFORE the enqueue so nothing
+        // is scheduled, revoked, or destroyed.
+        const blockers = await listOrgsBlockingAccountDeletion(db, userId);
+        if (blockers.length > 0)
+            return { ok: false, kind: "org_successor_required", blockers };
+
         // DATA FIRST, AUTH LAST — main's ordering, kept.
         //
         // documents.user_id references auth.users ON DELETE CASCADE (and
