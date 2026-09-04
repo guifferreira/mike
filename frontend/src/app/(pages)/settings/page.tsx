@@ -16,6 +16,7 @@ import {
 } from "@/app/components/popups/MfaVerificationPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import { deleteAccount, isMfaRequiredError } from "@/app/lib/mikeApi";
+import { userFacingApiError } from "@/app/lib/userFacingError";
 import {
   SettingsDescription,
   SettingsLabel,
@@ -56,8 +57,7 @@ export default function SettingsPage() {
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [accountDeleteMfaOpen, setAccountDeleteMfaOpen] = useState(false);
-  const [accountDeleteWarningOpen, setAccountDeleteWarningOpen] =
-    useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const requiresPasswordForEmailChange =
     user?.createdWithGoogle === true && profile?.passwordSet !== true;
 
@@ -102,6 +102,7 @@ export default function SettingsPage() {
   const handleDeleteAccount = async () => {
     devLog("[account/mfa] delete account requested");
     setIsDeleting(true);
+    setDeleteError(null);
     try {
       if (await needsMfaVerification()) {
         setDeleteConfirm(false);
@@ -124,7 +125,16 @@ export default function SettingsPage() {
         return;
       }
       setDeleteConfirm(false);
-      setAccountDeleteWarningOpen(true);
+      // Deletion can be refused for a reason only the user can act on —
+      // a 409 naming the organization they are the last admin of, for
+      // instance. That is an intentional 4xx detail, so it is shown
+      // verbatim; the session is untouched because nothing was deleted.
+      setDeleteError(
+        userFacingApiError(
+          error,
+          "Your account could not be deleted. Please try again.",
+        ),
+      );
     }
   };
 
@@ -405,16 +415,16 @@ export default function SettingsPage() {
         onConfirm={() => void handleDeleteAccount()}
       />
       <WarningPopup
+        open={deleteError !== null}
+        title="Account deletion failed"
+        message={deleteError}
+        onClose={() => setDeleteError(null)}
+      />
+      <WarningPopup
         open={!!emailWarning}
         title={emailWarning?.title}
         message={emailWarning?.message}
         onClose={() => setEmailWarning(null)}
-      />
-      <WarningPopup
-        open={accountDeleteWarningOpen}
-        title="Account deletion failed"
-        message="Your account could not be deleted. Please try again."
-        onClose={() => setAccountDeleteWarningOpen(false)}
       />
       <Modal
         open={googleEmailModalOpen}
