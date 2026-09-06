@@ -10,6 +10,7 @@ import { InvalidApiKeyError } from "../../../lib/llm/apiKeyErrors";
 import type { Db } from "../../../lib/supabase";
 import { buildUserMcpTools, type McpToolEvent } from "../../../lib/mcpConnectors";
 import type { SourceDocument } from "../../../lib/sourceDocuments";
+import { buildGoogleDriveTools } from "../../../lib/integrations/googleDrive";
 import {
   COURTLISTENER_TOOLS,
   type CaseCitationEvent,
@@ -281,6 +282,7 @@ export async function runLLMStream(params: {
     unsafeWrite(sanitizeAssistantSseChunk(chunk));
   const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
   const mcpTools = await buildUserMcpTools(userId, db);
+  const googleDriveTools = await buildGoogleDriveTools(userId, db);
   const conversationTools = includeAskInputs
     ? TOOLS
     : TOOLS.filter((tool) => tool.function.name !== "ask_inputs");
@@ -288,6 +290,7 @@ export async function runLLMStream(params: {
   const advertisedTools = [
     ...baseTools,
     ...mcpTools,
+    ...googleDriveTools,
     ...(extraTools ?? []),
     ...(clientTools?.schemas ?? []),
   ];
