@@ -16,16 +16,21 @@ import {
 } from "@/app/components/popups/MfaVerificationPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import {
+  type GoogleDriveStatus,
   type McpConnectorSummary,
   MikeApiError,
+  cancelGoogleDriveOAuth,
   isConnectorSetupError,
   createMcpConnector,
   deleteMcpConnector,
+  disconnectGoogleDrive,
+  getGoogleDriveStatus,
   getMcpConnector,
   isMfaRequiredError,
   listMcpConnectors,
   refreshMcpConnectorTools,
   setMcpToolEnabled,
+  startGoogleDriveOAuth,
   startMcpConnectorOAuth,
   updateMcpConnector,
 } from "@/app/lib/mikeApi";
@@ -42,6 +47,8 @@ import { ToggleSwitchUI } from "@/shared/ui/ToggleSwitchUI";
 
 type PendingMfaAction =
   | { type: "create"; draft: AddDraft; surface: CreateSurface }
+  | { type: "drive-connect" }
+  | { type: "drive-disconnect" }
   | { type: "save"; connectorId: string }
   | { type: "clear-token"; connectorId: string }
   | { type: "delete"; connectorId: string }
@@ -229,6 +236,264 @@ function ConnectorBrandIcon({ name }: { name: string }) {
   );
 }
 
+type GoogleDriveCardHandle = {
+  connect: () => Promise<void>;
+  disconnect: () => Promise<void>;
+};
+
+class GoogleDriveFlowError extends Error {}
+
+function GoogleDriveCard({
+  runSensitiveAction,
+  handleRef,
+}: {
+  runSensitiveAction: (
+    action: PendingMfaAction,
+    fn: () => Promise<void>,
+  ) => Promise<void>;
+  handleRef: { current: GoogleDriveCardHandle | null };
+}) {
+  const [status, setStatus] = useState<GoogleDriveStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getGoogleDriveStatus()
+      .then((next) => {
+        if (!cancelled) setStatus(next);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError(
+            "Could not load Google Drive status. Please reload this page.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    const abortController = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = abortController;
+    let pendingState: string | null = null;
+    const popup = window.open(
+      "about:blank",
+      "mike_google_drive_oauth",
+      "popup,width=560,height=720,menubar=no,toolbar=no,location=no,status=no",
+    );
+    try {
+      await runSensitiveAction({ type: "drive-connect" }, async () => {
+        try {
+          const { authorizationUrl } = await startGoogleDriveOAuth();
+          pendingState = new URL(authorizationUrl).searchParams.get("state");
+          if (abortController.signal.aborted) {
+            throw new GoogleDriveFlowError("Authorization cancelled.");
+          }
+          if (!popup) {
+            pendingState = null;
+            window.location.assign(authorizationUrl);
+            return;
+          }
+          popup.location.href = authorizationUrl;
+
+          await new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const started = Date.now();
+            let pollTimer = 0;
+            const finish = (action: () => void) => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(timeout);
+              window.clearTimeout(pollTimer);
+              abortController.signal.removeEventListener("abort", onAbort);
+              action();
+            };
+            const timeout = window.setTimeout(
+              () =>
+                finish(() =>
+                  reject(
+                    new GoogleDriveFlowError("Google authorization timed out."),
+                  ),
+                ),
+              5 * 60 * 1000,
+            );
+            const schedule = () => {
+              const delay = Date.now() - started < 60_000 ? 1500 : 5000;
+              pollTimer = window.setTimeout(runPoll, delay);
+            };
+            const runPoll = () => {
+              void getGoogleDriveStatus()
+                .then((next) => {
+                  if (settled) return;
+                  if (next.connected) {
+                    pendingState = null;
+                    setStatus(next);
+                    finish(resolve);
+                    return;
+                  }
+                  schedule();
+                })
+                .catch(() => {
+                  if (!settled) schedule();
+                });
+            };
+            const onAbort = () =>
+              finish(() =>
+                reject(new GoogleDriveFlowError("Authorization cancelled.")),
+              );
+            abortController.signal.addEventListener("abort", onAbort);
+            schedule();
+          });
+        } catch (cause) {
+          if (isMfaRequiredError(cause)) throw cause;
+          setError(
+            cause instanceof GoogleDriveFlowError
+              ? cause.message
+              : userFacingApiError(cause, "Failed to connect Google Drive."),
+          );
+        }
+      });
+    } finally {
+      if (pendingState) {
+        try {
+          await cancelGoogleDriveOAuth(pendingState);
+          setStatus(await getGoogleDriveStatus());
+        } catch {
+          setError(
+            "Could not cancel Google authorization. Close the Google window and reload this page.",
+          );
+        }
+      }
+      try {
+        popup?.close();
+      } catch {
+        // Google may sever the opener relationship; the popup then self-closes.
+      }
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await runSensitiveAction({ type: "drive-disconnect" }, async () => {
+        try {
+          await disconnectGoogleDrive();
+          setStatus((current) =>
+            current ? { ...current, connected: false, scope: null } : current,
+          );
+        } catch (cause) {
+          if (isMfaRequiredError(cause)) throw cause;
+          setError(
+            userFacingApiError(cause, "Failed to disconnect Google Drive."),
+          );
+        }
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    handleRef.current = { connect, disconnect };
+    return () => {
+      handleRef.current = null;
+    };
+  });
+
+  return (
+    <SettingsCard>
+      <div className="flex items-center justify-between gap-3 px-4 py-5">
+        <div className="min-w-0">
+          <SettingsLabel>Google Drive</SettingsLabel>
+          <SettingsDescription>
+            {status?.connected
+              ? "Connected — the assistant can search and read your Drive files (read-only)."
+              : "Let the assistant search and read your Google Drive files (read-only)."}
+          </SettingsDescription>
+        </div>
+        {status === null ? (
+          <span className="text-xs text-muted-foreground">
+            {error ? "Unavailable" : "Loading…"}
+          </span>
+        ) : status.connected ? (
+          <PillButtonUI
+            tone="white"
+            size="sm"
+            onClick={() => void disconnect()}
+            disabled={busy}
+          >
+            {busy ? "Disconnecting…" : "Disconnect"}
+          </PillButtonUI>
+        ) : (
+          <PillButtonUI
+            tone="blue"
+            size="sm"
+            onClick={() => void connect()}
+            disabled={
+              busy || !status.configured || status.schemaReady === false
+            }
+          >
+            {busy ? "Waiting for Google…" : "Connect"}
+          </PillButtonUI>
+        )}
+      </div>
+      {status !== null && !status.connected && status.schemaReady === false && (
+        <p className="px-4 pb-4 text-xs text-muted-foreground">
+          Not available on this server yet: the database is missing the Google
+          Drive migration
+          (backend/migrations/20260921_02_google_drive_integration.sql). The
+          administrator needs to apply it and restart.
+        </p>
+      )}
+      {status !== null &&
+        !status.connected &&
+        status.schemaReady !== false &&
+        !status.configured && (
+          <div className="px-4 pb-4 text-xs text-muted-foreground">
+            <p>
+              Not available on this server: the administrator needs to configure
+              a Google OAuth client (see &ldquo;Google Drive Integration&rdquo;
+              in the README).
+            </p>
+            {status.redirectUri && (
+              <p className="mt-1">
+                Authorized redirect URI to register: {" "}
+                <code className="break-all text-foreground">
+                  {status.redirectUri}
+                </code>
+              </p>
+            )}
+          </div>
+        )}
+      {busy && !status?.connected && (
+        <PillButtonUI
+          tone="white"
+          size="xs"
+          onClick={() => abortRef.current?.abort()}
+          className="mx-4 mb-4"
+        >
+          Cancel
+        </PillButtonUI>
+      )}
+      {error && (
+        <p className="px-4 pb-4 whitespace-pre-wrap text-xs text-destructive">
+          {error}
+        </p>
+      )}
+    </SettingsCard>
+  );
+}
+
 export default function ConnectorsPage() {
   const [connectors, setConnectors] = useState<McpConnectorSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -279,6 +544,7 @@ export default function ConnectorsPage() {
 
   const selectedConnector = selectedConnectorDetails;
   const initializedDetailConnectorIdRef = useRef<string | null>(null);
+  const googleDriveHandleRef = useRef<GoogleDriveCardHandle | null>(null);
 
   const loadConnectors = useCallback(async () => {
     setLoading(true);
@@ -974,6 +1240,12 @@ export default function ConnectorsPage() {
     if (action.type === "create") {
       await handleCreate(action.draft, action.surface);
     }
+    if (action.type === "drive-connect") {
+      await googleDriveHandleRef.current?.connect();
+    }
+    if (action.type === "drive-disconnect") {
+      await googleDriveHandleRef.current?.disconnect();
+    }
     if (action.type === "save") await handleSaveSelectedConnector();
     if (action.type === "clear-token") {
       await handleClearBearerToken(action.connectorId);
@@ -1015,6 +1287,13 @@ export default function ConnectorsPage() {
           {error}
         </div>
       )}
+
+      <div className="mb-3">
+        <GoogleDriveCard
+          runSensitiveAction={runSensitiveAction}
+          handleRef={googleDriveHandleRef}
+        />
+      </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
         {!loading &&
