@@ -79,7 +79,7 @@ describe("MarkdownEditor", () => {
       "liquid-glass-flat",
     );
     // Not a table: a surface being typed into stays visually raised while
-    // table containers intentionally match the app background.
+    // table containers are intentionally transparent.
     expect(container.firstElementChild).not.toHaveClass("table-surface");
 
     expect(

@@ -138,11 +138,11 @@
     --sidebar-ring: oklch(0.556 0 0);
 }
 
-/* Tables use one solid page-background surface. Sticky layers consume the
-   inherited cell token so content scrolling beneath them never shows through. */
+/* Table surfaces are transparent. Sticky layers retain an opaque page-color
+   backing so content scrolling beneath them never shows through. */
 .table-surface {
     --table-cell-background: var(--app-background);
-    background-color: var(--table-cell-background);
+    background-color: transparent;
     border: 1px solid transparent;
     box-shadow: none;
 }
