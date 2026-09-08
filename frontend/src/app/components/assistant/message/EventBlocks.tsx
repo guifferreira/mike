@@ -2,6 +2,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, Download, Loader2 } from "lucide-react";
+import {
+    EventDisclosureButton,
+    EventLabel,
+} from "@/app/components/assistant/message/EventDisclosure";
 import { API_BASE } from "@/app/lib/mikeApi";
 import { authenticatedFetch } from "@/app/lib/authEvents";
 import type { AssistantEvent } from "../../shared/types";
@@ -115,26 +119,18 @@ export function ReasoningBlock({
             isStreaming={isStreaming}
             dotColor="gray"
         >
-            <button
-                type="button"
-                aria-expanded={showContent}
-                onClick={() => {
+            <EventDisclosureButton
+                open={showContent}
+                onToggle={() => {
                     setUserToggledContent(true);
                     setIsContentOpen((v) => !v);
                 }}
-                className="flex items-center text-sm font-serif text-gray-500 hover:text-gray-600 transition-colors"
-            >
-                <span className="font-medium">
-                    {isStreaming
+                label={
+                    isStreaming
                         ? THINKING_PHRASES[thinkingIndex]
-                        : "Thought process"}
-                </span>
-                <ChevronDown
-                    size={10}
-                    aria-hidden="true"
-                    className={`relative top-px ml-1 transition-transform duration-200 ${isContentOpen ? "" : "-rotate-90"}`}
-                />
-            </button>
+                        : "Thought process"
+                }
+            />
             {showContent && (
                 <div className="mt-2">
                     <div
@@ -268,9 +264,9 @@ export function DocCreatedBlock({
             dotColor="green"
         >
             <div className="flex min-w-0 items-center gap-1.5">
-                <span className="shrink-0 font-medium">
+                <EventLabel className="shrink-0">
                     {isStreaming ? "Creating" : "Created"}
-                </span>
+                </EventLabel>
                 {isStreaming || !onClick ? (
                     <span className="flex min-w-0 items-center gap-1.5">
                         <FileTypeIcon
@@ -341,7 +337,7 @@ export function DocReplicatedBlock({
             isStreaming={isStreaming}
             dotColor={hasError ? "red" : "green"}
         >
-            <span className="font-medium">{label}</span>{" "}
+            <EventLabel>{label}</EventLabel>{" "}
             {!isStreaming && copies?.length ? (
                 <span>
                     {copies.map((copy, index) => (
@@ -519,7 +515,7 @@ export function WorkflowAppliedBlock({
 }) {
     return (
         <EventBlock showConnector={showConnector} dotColor="green">
-            <span className="font-medium">Read Workflow</span>{" "}
+            <EventLabel>Read Workflow</EventLabel>{" "}
             {onClick ? (
                 <button
                     onClick={onClick}
@@ -552,17 +548,11 @@ export function AskInputsBlock({
             showConnector={showConnector}
             dotColor={response ? "green" : "gray"}
         >
-            <button
-                type="button"
-                aria-expanded={isOpen}
-                onClick={() => setIsOpen((open) => !open)}
-                className="flex items-center gap-1 font-medium text-gray-600 transition-colors hover:text-gray-800"
-            >
-                {response ? "Asked for input" : "Asking for input"}
-                <ChevronDown
-                    className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-180" : ""}`}
-                />
-            </button>
+            <EventDisclosureButton
+                open={isOpen}
+                onToggle={() => setIsOpen((open) => !open)}
+                label={response ? "Asked for input" : "Asking for input"}
+            />
             {isOpen && (
                 <div className="mt-2 space-y-2 text-gray-800">
                     {event.items.map((item, index) => {
@@ -643,22 +633,17 @@ export function CourtListenerBlock({
             dotColor={hasError ? "red" : "green"}
         >
             {hasItems ? (
-                <button
-                    onClick={() => setIsOpen((v) => !v)}
-                    className="text-left hover:text-gray-700 transition-colors inline-flex items-center"
-                >
-                    <span className="font-medium">{label}</span>
-                    {detail ? <span>&nbsp;{detail}</span> : null}
-                    {isStreaming ? <span>...</span> : null}
-                    <ChevronDown
-                        size={10}
-                        className={`relative top-px ml-1 transition-transform duration-200 ${isOpen ? "" : "-rotate-90"}`}
-                    />
-                </button>
+                <EventDisclosureButton
+                    open={isOpen}
+                    onToggle={() => setIsOpen((v) => !v)}
+                    label={label}
+                    detail={detail}
+                    isStreaming={isStreaming}
+                />
             ) : (
                 <>
-                    <span className="font-medium">{label}</span>
-                    {detail ? <span> {detail}</span> : null}
+                    <EventLabel>{label}</EventLabel>
+                    {detail ? <span>&nbsp;{detail}</span> : null}
                     {isStreaming ? <span>...</span> : null}
                 </>
             )}
