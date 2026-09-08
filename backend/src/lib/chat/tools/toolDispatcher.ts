@@ -103,6 +103,8 @@ function normalizeAskInputsEvent(
             ? "documents"
             : row.kind === "text"
               ? "text"
+              : row.kind === "multi_choice"
+                ? "multi-choice"
               : "choice"
         }-${index + 1}`;
       const responsePrefix = cleanAskInputString(row.response_prefix);
@@ -142,9 +144,12 @@ function normalizeAskInputsEvent(
         };
       }
 
+      const multiChoice = row.kind === "multi_choice";
       const question = cleanAskInputString(
         row.question,
-        "Please choose an option.",
+        multiChoice
+          ? "Please choose one or more options."
+          : "Please choose an option.",
       );
       const rawOptions = Array.isArray(row.options) ? row.options : [];
       const options = rawOptions
@@ -166,7 +171,7 @@ function normalizeAskInputsEvent(
       const otherLabel = cleanAskInputString(row.other_label, "Other");
       return {
         id: id.slice(0, 80),
-        kind: "choice",
+        kind: multiChoice ? "multi_choice" : "choice",
         question: question.slice(0, 500),
         options: normalizedOptions,
         allow_other: row.allow_other !== false,

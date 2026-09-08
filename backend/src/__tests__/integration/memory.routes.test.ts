@@ -6,9 +6,6 @@ const mocks = vi.hoisted(() => ({
   checkProjectAccess: vi.fn(),
   ensureMemoryFile: vi.fn(),
   getMemoryCurrent: vi.fn(),
-  listMemoryVersions: vi.fn(),
-  memoryVersionContent: vi.fn(),
-  restoreMemoryVersion: vi.fn(),
   wipeMemoryFile: vi.fn(),
   writeMemoryFile: vi.fn(),
   enableMemoryFile: vi.fn(),
@@ -41,12 +38,6 @@ vi.mock("../../lib/memory/files", async (importOriginal) => {
     ...original,
     ensureMemoryFile: (...args: unknown[]) => mocks.ensureMemoryFile(...args),
     getMemoryCurrent: (...args: unknown[]) => mocks.getMemoryCurrent(...args),
-    listMemoryVersions: (...args: unknown[]) =>
-      mocks.listMemoryVersions(...args),
-    memoryVersionContent: (...args: unknown[]) =>
-      mocks.memoryVersionContent(...args),
-    restoreMemoryVersion: (...args: unknown[]) =>
-      mocks.restoreMemoryVersion(...args),
     wipeMemoryFile: (...args: unknown[]) => mocks.wipeMemoryFile(...args),
     writeMemoryFile: (...args: unknown[]) => mocks.writeMemoryFile(...args),
     enableMemoryFile: (...args: unknown[]) => mocks.enableMemoryFile(...args),
@@ -54,7 +45,7 @@ vi.mock("../../lib/memory/files", async (importOriginal) => {
 });
 
 import { projectMemoryRouter, userMemoryRouter } from "../../routes/memory";
-import { MemoryVersionConflictError } from "../../lib/memory/files";
+import { MemoryRevisionConflictError } from "../../lib/memory/files";
 
 const file = {
   id: "00000000-0000-4000-8000-000000000010",
@@ -63,7 +54,7 @@ const file = {
   project_id: null,
   enabled: true,
   epoch: 0,
-  version: 2,
+  revision: 2,
   learning_cutoff_at: "2026-09-05T00:00:00.000Z",
   current_version_id: "00000000-0000-4000-8000-000000000011",
   status: "idle" as const,
@@ -77,7 +68,7 @@ const file = {
 const current = {
   enabled: true,
   content: "# Memory",
-  version: 2,
+  revision: 2,
   hash: "a".repeat(64),
   updated_at: "2026-09-05T00:00:00.000Z",
   updated_by: "00000000-0000-4000-8000-000000000001",
@@ -100,15 +91,12 @@ beforeEach(() => {
   mocks.wipeMemoryFile.mockResolvedValue({
     ...current,
     content: "",
-    version: 0,
+    revision: 0,
     hash: null,
     updated_at: null,
     updated_by: null,
   });
   mocks.enableMemoryFile.mockResolvedValue(current);
-  mocks.listMemoryVersions.mockResolvedValue([]);
-  mocks.memoryVersionContent.mockResolvedValue("# Earlier memory");
-  mocks.restoreMemoryVersion.mockResolvedValue(current);
   mocks.checkProjectAccess.mockResolvedValue({
     ok: true,
     projectRole: "owner",
@@ -124,20 +112,19 @@ describe("scoped memory routes", () => {
       expect.anything(),
       "user",
       "00000000-0000-4000-8000-000000000001",
-      true,
     );
   });
 
-  it("uses expected_version CAS and returns the current value on conflict", async () => {
+  it("uses expected_revision CAS and returns the current value on conflict", async () => {
     mocks.writeMemoryFile.mockRejectedValueOnce(
-      new MemoryVersionConflictError("changed"),
+      new MemoryRevisionConflictError("changed"),
     );
     const response = await request(testApp())
       .put("/user/memory")
-      .send({ content: "next", expected_version: 2 })
+      .send({ content: "next", expected_revision: 2 })
       .expect(409);
     expect(response.body).toMatchObject({
-      code: "memory_version_conflict",
+      code: "memory_revision_conflict",
       current,
     });
   });
@@ -163,20 +150,12 @@ describe("scoped memory routes", () => {
       projectRole: "viewer",
     });
     const base = "/projects/00000000-0000-4000-8000-000000000020/memory";
-    const versionId = "00000000-0000-4000-8000-000000000021";
 
     await request(testApp()).get(base).expect(200);
-    await request(testApp()).get(`${base}/versions`).expect(200);
-    await request(testApp())
-      .get(`${base}/versions/${versionId}/memory.md`)
-      .expect(200);
+    await request(testApp()).get(`${base}/memory.md`).expect(200);
     await request(testApp())
       .put(base)
-      .send({ content: "next", expected_version: 2 })
-      .expect(403);
-    await request(testApp())
-      .post(`${base}/versions/${versionId}/restore`)
-      .send({ expected_version: 2 })
+      .send({ content: "next", expected_revision: 2 })
       .expect(403);
     await request(testApp())
       .patch(`${base}/settings`)
@@ -184,9 +163,7 @@ describe("scoped memory routes", () => {
       .expect(403);
     await request(testApp()).delete(base).expect(403);
 
-    expect(mocks.memoryVersionContent).toHaveBeenCalledOnce();
     expect(mocks.writeMemoryFile).not.toHaveBeenCalled();
-    expect(mocks.restoreMemoryVersion).not.toHaveBeenCalled();
     expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
   });
 
@@ -205,13 +182,11 @@ describe("scoped memory routes", () => {
       { marker: "db" },
       "project",
       projectId,
-      true,
     );
     expect(mocks.getMemoryCurrent).toHaveBeenCalledWith(
       { marker: "db" },
       "project",
       projectId,
-      true,
     );
   });
 
@@ -221,14 +196,9 @@ describe("scoped memory routes", () => {
     const versionId = "00000000-0000-4000-8000-000000000021";
 
     await request(testApp()).get(base).expect(404);
-    await request(testApp()).get(`${base}/versions`).expect(404);
     await request(testApp())
       .put(base)
-      .send({ content: "next", expected_version: 2 })
-      .expect(404);
-    await request(testApp())
-      .post(`${base}/versions/${versionId}/restore`)
-      .send({ expected_version: 2 })
+      .send({ content: "next", expected_revision: 2 })
       .expect(404);
     await request(testApp())
       .patch(`${base}/settings`)
@@ -237,25 +207,19 @@ describe("scoped memory routes", () => {
     await request(testApp()).delete(base).expect(404);
 
     expect(mocks.writeMemoryFile).not.toHaveBeenCalled();
-    expect(mocks.restoreMemoryVersion).not.toHaveBeenCalled();
     expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
   });
 
-  it("lets editors edit and restore but reserves destructive controls for owners", async () => {
+  it("lets editors edit but reserves destructive controls for owners", async () => {
     mocks.checkProjectAccess.mockResolvedValue({
       ok: true,
       projectRole: "editor",
     });
     const base = "/projects/00000000-0000-4000-8000-000000000020/memory";
-    const versionId = "00000000-0000-4000-8000-000000000021";
 
     await request(testApp())
       .put(base)
-      .send({ content: "next", expected_version: 2 })
-      .expect(200);
-    await request(testApp())
-      .post(`${base}/versions/${versionId}/restore`)
-      .send({ expected_version: 2 })
+      .send({ content: "next", expected_revision: 2 })
       .expect(200);
     await request(testApp())
       .patch(`${base}/settings`)
@@ -263,12 +227,12 @@ describe("scoped memory routes", () => {
       .expect(403);
     await request(testApp()).delete(base).expect(403);
 
-    expect(mocks.writeMemoryFile).toHaveBeenCalledOnce();
-    expect(mocks.restoreMemoryVersion).toHaveBeenCalledWith(
+    expect(mocks.writeMemoryFile).toHaveBeenCalledWith(
       expect.objectContaining({
         file,
-        versionId,
-        expectedVersion: 2,
+        content: "next",
+        expectedRevision: 2,
+        source: "manual",
       }),
     );
     expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
@@ -291,33 +255,6 @@ describe("scoped memory routes", () => {
       2,
       expect.objectContaining({ enabled: null, source: "wipe" }),
     );
-  });
-
-  it("binds version reads to the authorized memory file", async () => {
-    const versionId = "00000000-0000-4000-8000-000000000021";
-    const response = await request(testApp())
-      .get(`/user/memory/versions/${versionId}/memory.md`)
-      .expect(200);
-
-    expect(response.text).toBe("# Earlier memory");
-    expect(mocks.memoryVersionContent).toHaveBeenCalledWith(
-      expect.anything(),
-      file.id,
-      versionId,
-    );
-  });
-
-  it("rejects malformed version IDs without querying storage metadata", async () => {
-    await request(testApp())
-      .get("/user/memory/versions/not-a-uuid/memory.md")
-      .expect(404);
-    await request(testApp())
-      .post("/user/memory/versions/not-a-uuid/restore")
-      .send({ expected_version: 2 })
-      .expect(404);
-
-    expect(mocks.memoryVersionContent).not.toHaveBeenCalled();
-    expect(mocks.restoreMemoryVersion).not.toHaveBeenCalled();
   });
 
   it("serves literal Markdown as an attachment", async () => {

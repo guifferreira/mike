@@ -812,7 +812,7 @@ export function ChatView({
                 {/* Scrollable messages */}
                 <div
                     ref={messagesContainerRef}
-                    className="assistant-chat-message-fade flex-1 w-full overflow-y-auto"
+                    className="flex-1 w-full overflow-y-auto"
                     style={{ scrollbarGutter: "stable both-edges" }}
                 >
                     <div
@@ -955,6 +955,12 @@ export function ChatView({
                             })()}
                             <div ref={messagesEndRef} />
                         </div>
+                    </div>
+                </div>
+
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+                    <div className="mx-auto h-28 w-full max-w-4xl px-4 md:px-6">
+                        <div className="assistant-chat-input-fade h-full w-full" />
                     </div>
                 </div>
 

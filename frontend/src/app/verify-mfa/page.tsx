@@ -208,15 +208,9 @@ export default function VerifyMfaPage() {
                             type="button"
                             onClick={() => void verify()}
                             disabled={!canVerify}
+                            loading={verifying}
                         >
-                            {verifying ? (
-                                <span className="inline-flex items-center gap-1.5">
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    Verifying...
-                                </span>
-                            ) : (
-                                "Verify"
-                            )}
+                            {verifying ? "Verifying..." : "Verify"}
                         </PillButton>
                     </div>
                 </div>

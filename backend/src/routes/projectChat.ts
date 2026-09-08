@@ -286,13 +286,19 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
   let memoryTurn: MemoryConversationTurn | null = null;
   let memoryTurnScheduled = false;
     if (askInputsResponse) {
-    completedTurnPersisted =
+    const appendResult =
         await appendAskInputsResponseToLastAssistantMessage(
             db,
             chatId,
             askInputsResponse,
         userId,
         );
+    if (appendResult === "forbidden") {
+      return void res.status(403).json({
+        detail: "Only the user who started this turn can answer these questions",
+      });
+    }
+    completedTurnPersisted = appendResult === "appended";
     if (!completedTurnPersisted) {
       return void res.status(500).json({ detail: "Failed to save message" });
     }

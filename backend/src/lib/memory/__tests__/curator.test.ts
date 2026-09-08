@@ -4,15 +4,43 @@ import {
   buildMemoryCuratorTranscript,
   loadEligibleMemoryMessages,
   MEMORY_CURATOR_WRITE_TOOL,
+  memoryCuratorModelForChat,
   matchesLatestConversationActivity,
   runMemoryCuratorScope,
   type CuratorScopeServices,
   type MemoryCuratorStoredMessage,
 } from "../curator";
 import {
-  MemoryVersionConflictError,
+  MemoryRevisionConflictError,
   type MemoryFileRow,
 } from "../files";
+
+describe("memory curator model selection", () => {
+  it("prefers the environment override, then the user's memory preference", () => {
+    expect(
+      memoryCuratorModelForChat({
+        chatModel: "gpt-5.6-sol",
+        memoryCuratorModel: "gpt-5.6-luna",
+        environmentOverride: " claude-haiku-4-5 ",
+      }),
+    ).toBe("claude-haiku-4-5");
+
+    expect(
+      memoryCuratorModelForChat({
+        chatModel: "gpt-5.6-sol",
+        memoryCuratorModel: "gpt-5.6-luna",
+      }),
+    ).toBe("gpt-5.6-luna");
+  });
+
+  it("falls back to the conversation's selected chat model", () => {
+    expect(
+      memoryCuratorModelForChat({
+        chatModel: "gpt-5.6-sol",
+      }),
+    ).toBe("gpt-5.6-sol");
+  });
+});
 
 function row(
   id: string,
@@ -32,6 +60,7 @@ function row(
     author_user_id: authorUserId,
     memory_input_message_id: options.inputId ?? null,
     memory_eligible_at: options.eligibleAt ?? null,
+    memory_app_eligible_at: options.eligibleAt ?? null,
     created_at: options.createdAt ?? "2026-09-05T00:00:00.000Z",
   };
 }
@@ -262,8 +291,16 @@ describe("memory curator transcript isolation", () => {
           },
           contains: (
             column: keyof MemoryCuratorStoredMessage,
-            values: Array<Record<string, unknown>>,
+            filter: unknown,
           ) => {
+            // postgrest-js only sends a jsonb containment filter verbatim when
+            // it is given a string; an array becomes a PostgREST array literal
+            // that Postgres rejects on a jsonb column. Fail here rather than
+            // let that reach a real database.
+            expect(typeof filter).toBe("string");
+            const values = JSON.parse(filter as string) as Array<
+              Record<string, unknown>
+            >;
             selected = selected.filter((candidate) => {
               if (column !== "content" || !Array.isArray(candidate.content)) {
                 return false;
@@ -324,7 +361,7 @@ function file(scope: "user" | "project" = "user"): MemoryFileRow {
     project_id: scope === "project" ? "project" : null,
     enabled: true,
     epoch: 7,
-    version: 1,
+    revision: 1,
     current_version_id: "version-1",
     status: "processing",
     last_error_code: null,
@@ -340,7 +377,7 @@ function args(scope: "user" | "project" = "user") {
   return {
     db: {} as never,
     file: file(scope),
-    current: { content: "# Existing", version: 1 },
+    current: { content: "# Existing", revision: 1 },
     transcript: "User: Keep responses concise",
     model: "openai:gpt-test",
     apiKeys: {},
@@ -366,7 +403,7 @@ function services(overrides: Partial<CuratorScopeServices> = {}) {
       current: {
         enabled: true,
         content: "# Updated",
-        version: 2,
+        revision: 2,
         hash: "hash",
         updated_at: "2026-09-05T00:01:00.000Z",
         updated_by: "actor",
@@ -392,7 +429,7 @@ describe("scope-bound memory curator tool", () => {
           id: "call-1",
           name: "write_memory_file",
           input: {
-            expectedVersion: 1,
+            expectedRevision: 1,
             markdown: "# Updated\n- Concise",
             changeSummary: "Remember concise response preference",
           },
@@ -403,7 +440,7 @@ describe("scope-bound memory curator tool", () => {
 
     const result = await runMemoryCuratorScope(args(), svc);
 
-    expect(result).toEqual({ outcome: "updated", version: 2 });
+    expect(result).toEqual({ outcome: "updated", revision: 2 });
     expect(svc.stream).toHaveBeenCalledWith(
       expect.objectContaining({
         requireTools: true,
@@ -414,19 +451,21 @@ describe("scope-bound memory curator tool", () => {
       expect.objectContaining({
         file: expect.objectContaining({ id: "memory-file", scope: "user" }),
         content: "# Updated\n- Concise",
-        expectedVersion: 1,
+        expectedRevision: 1,
         expectedEpoch: 7,
         sourceEpoch: 2,
         conversationGeneration: 11,
         sourceJobId: "job",
-        changeSummary: "Remember concise response preference",
       }),
     );
+    // The tool still demands a rationale so the model has to justify the
+    // rewrite, but nothing stores it: the file keeps only its current body.
+    expect(svc.write.mock.calls[0]![0]).not.toHaveProperty("changeSummary");
     expect(
       Object.keys(
         MEMORY_CURATOR_WRITE_TOOL.function.parameters.properties as object,
       ),
-    ).toEqual(["markdown", "expectedVersion", "changeSummary"]);
+    ).toEqual(["markdown", "expectedRevision", "changeSummary"]);
     expect(JSON.stringify(MEMORY_CURATOR_WRITE_TOOL)).not.toMatch(
       /owner|project_id|scope|storage_path/i,
     );
@@ -435,7 +474,7 @@ describe("scope-bound memory curator tool", () => {
   it("records no change when the model calls no tool", async () => {
     const svc = services();
     const result = await runMemoryCuratorScope(args(), svc);
-    expect(result).toEqual({ outcome: "no_change", version: 1 });
+    expect(result).toEqual({ outcome: "no_change", revision: 1 });
     expect(svc.write).not.toHaveBeenCalled();
   });
 
@@ -449,7 +488,7 @@ describe("scope-bound memory curator tool", () => {
           id: "call-1",
           name: "write_memory_file",
           input: {
-            expectedVersion: 1,
+            expectedRevision: 1,
             markdown: "# Bad",
             changeSummary: "Bad update",
           },
@@ -468,7 +507,7 @@ describe("scope-bound memory curator tool", () => {
   it("retries a concurrent edit so the next run rebases on latest memory", async () => {
     const svc = services({
       write: vi.fn(async () => {
-        throw new MemoryVersionConflictError("private raw conflict detail");
+        throw new MemoryRevisionConflictError("private raw conflict detail");
       }),
     });
     svc.stream = vi.fn(async (params: StreamChatParams) => {
@@ -477,7 +516,7 @@ describe("scope-bound memory curator tool", () => {
           id: "call-1",
           name: "write_memory_file",
           input: {
-            expectedVersion: 1,
+            expectedRevision: 1,
             markdown: "# Next",
             changeSummary: "Rebase update",
           },

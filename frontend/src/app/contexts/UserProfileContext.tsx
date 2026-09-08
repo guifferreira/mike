@@ -31,7 +31,7 @@ import {
     parseTabularChatSelectionKey,
 } from "@/app/lib/mikeApi";
 import type { Message } from "@/app/components/shared/types";
-import { applyDarkMode, applyTransparentTables } from "@/app/lib/theme";
+import { applyDarkMode } from "@/app/lib/theme";
 import { publishTabularChatSettingsUpdate } from "@/app/lib/tabularChatSettingsEvents";
 
 interface UserProfile {
@@ -50,6 +50,7 @@ interface UserProfile {
     tier: string;
     titleModel: string | null;
     tabularModel: string | null;
+    memoryCuratorModel: string | null;
     lastSelectedChatModel: string | null;
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
@@ -59,7 +60,7 @@ interface UserProfile {
     vercelModels: string[];
     openCodeGoModels: string[];
     darkMode: boolean;
-    transparentTables: boolean;
+    projectMemoryDefault: boolean;
     apiKeys: ApiKeyState;
 }
 
@@ -84,7 +85,7 @@ interface UserProfileContextType {
     ) => Promise<boolean>;
     syncPasswordSet: () => Promise<boolean>;
     updateModelPreference: (
-        field: "titleModel" | "tabularModel",
+        field: "titleModel" | "tabularModel" | "memoryCuratorModel",
         value: string | null,
     ) => Promise<boolean>;
     persistChatModelSelection: (
@@ -102,7 +103,7 @@ interface UserProfileContextType {
     updateVercelModels: (models: string[]) => Promise<boolean>;
     updateOpenCodeGoModels: (models: string[]) => Promise<boolean>;
     updateDarkMode: (enabled: boolean) => Promise<void>;
-    updateTransparentTables: (enabled: boolean) => Promise<void>;
+    updateProjectMemoryDefault: (enabled: boolean) => Promise<void>;
     updateApiKey: (
         provider: ApiKeyProvider,
         value: string | null,
@@ -160,11 +161,12 @@ function toProfile(data: ApiUserProfile): UserProfile {
         onboardingVersion: profile.onboardingVersion ?? null,
         onboardingComplete: profile.onboardingComplete !== false,
         passwordSet: profile.passwordSet === true,
+        memoryCuratorModel: profile.memoryCuratorModel ?? null,
         lastSelectedChatModel: profile.lastSelectedChatModel ?? null,
         lastSelectedReasoningLevel:
             profile.lastSelectedReasoningLevel ?? "high",
         mfaOnLogin: profile.mfaOnLogin === true,
-        transparentTables: profile.transparentTables !== false,
+        projectMemoryDefault: profile.projectMemoryDefault !== false,
         openRouterModels: Array.isArray(profile.openRouterModels)
             ? profile.openRouterModels
             : [],
@@ -225,6 +227,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 tier: "Free",
                 titleModel: null,
                 tabularModel: null,
+                memoryCuratorModel: null,
                 lastSelectedChatModel: null,
                 lastSelectedReasoningLevel: "high",
                 mfaOnLogin: false,
@@ -234,7 +237,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 vercelModels: [],
                 openCodeGoModels: [],
                 darkMode: false,
-                transparentTables: true,
+                projectMemoryDefault: true,
                 apiKeys: emptyApiKeys(),
             });
         } finally {
@@ -255,10 +258,6 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         applyDarkMode(profile?.darkMode === true);
     }, [profile?.darkMode]);
-
-    useEffect(() => {
-        applyTransparentTables(profile?.transparentTables !== false);
-    }, [profile?.transparentTables]);
 
     const updateDisplayName = useCallback(
         async (displayName: string): Promise<boolean> => {
@@ -337,7 +336,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
 
     const updateModelPreference = useCallback(
         async (
-            field: "titleModel" | "tabularModel",
+            field: "titleModel" | "tabularModel" | "memoryCuratorModel",
             value: string | null,
         ): Promise<boolean> => {
             if (!user) return false;
@@ -558,33 +557,22 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         [user, profile?.darkMode],
     );
 
-    const updateTransparentTables = useCallback(
+    const updateProjectMemoryDefault = useCallback(
         async (enabled: boolean): Promise<void> => {
             if (!user) {
-                throw new Error("Sign in to update table appearance.");
+                throw new Error("Sign in to update memory settings.");
             }
-            const previous = profile?.transparentTables === true;
-            applyTransparentTables(enabled);
-            try {
-                const updated = await updateUserProfile({
-                    transparentTables: enabled,
-                });
-                const normalized = toProfile(updated);
-                setProfile((prev) =>
-                    prev
-                        ? {
-                              ...prev,
-                              ...normalized,
-                              transparentTables: enabled,
-                          }
-                        : null,
-                );
-            } catch (error) {
-                applyTransparentTables(previous);
-                throw error;
-            }
+            const updated = await updateUserProfile({
+                projectMemoryDefault: enabled,
+            });
+            const normalized = toProfile(updated);
+            setProfile((prev) =>
+                prev
+                    ? { ...prev, ...normalized, projectMemoryDefault: enabled }
+                    : null,
+            );
         },
-        [user, profile?.transparentTables],
+        [user],
     );
 
     const updateApiKey = useCallback(
@@ -660,7 +648,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 updateVercelModels,
                 updateOpenCodeGoModels,
                 updateDarkMode,
-                updateTransparentTables,
+                updateProjectMemoryDefault,
                 updateApiKey,
                 reloadProfile,
                 incrementMessageCredits,

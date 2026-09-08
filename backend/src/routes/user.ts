@@ -60,6 +60,7 @@ import {
     buildUserTabularReviewsExport,
     userExportFilename,
 } from "../lib/userDataExport";
+import { deleteUserPrivateMemories } from "../lib/memory/bulk";
 import { findProfileUserByEmail } from "../lib/userLookup";
 import { configuredApiPublicUrl } from "../lib/runtimeConfig";
 import {
@@ -88,13 +89,14 @@ type UserProfileRow = {
     tier: string;
     title_model: string | null;
     tabular_model: string | null;
+    memory_curator_model?: string | null;
     last_selected_chat_model?: string | null;
     last_selected_reasoning_level?: string | null;
     mfa_on_login: boolean | null;
     legal_research_us: boolean | null;
     quick_actions_visible: boolean | null;
     dark_mode: boolean | null;
-    transparent_tables: boolean | null;
+    project_memory_default: boolean | null;
 };
 
 function errorMessage(error: unknown): string {
@@ -205,14 +207,16 @@ function mcpOAuthPopupCsp(nonce: string) {
     ].join("; ");
 }
 
+const PROFILE_SELECT_NEWEST =
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, project_memory_default";
+const PROFILE_SELECT_NO_MEMORY_CURATOR_MODEL =
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, project_memory_default";
 const PROFILE_SELECT_WITH_CHAT_SELECTIONS =
-    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, transparent_tables";
-const PROFILE_SELECT_NO_TRANSPARENT_TABLES =
     "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode";
 const PROFILE_SELECT_WITH_LAST_SELECTED_CHAT_MODEL =
-    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, transparent_tables";
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode";
 const PROFILE_SELECT =
-    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, transparent_tables";
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode";
 // Deploy-before-migrate tolerance is per column: a database that already has
 // the 20260821 onboarding/password columns but not yet dark_mode must keep
 // them rather than fall all the way back to a lower tier. This is exactly
@@ -252,10 +256,6 @@ function isMissingProfileColumn(error: unknown, column: string): boolean {
     return record.code === "42703" && message.includes(column);
 }
 
-function withoutTransparentTables(columns: string): string {
-    return columns.replace(", transparent_tables", "");
-}
-
 // Loads a profile while tolerating older databases that lack newer preference
 // columns. Tries the full select first, then falls back through the legacy
 // cascade (which also handles missing title_model / mfa_on_login) and applies
@@ -267,7 +267,7 @@ async function selectProfile(
 ) {
     const newestQuery = db
         .from("user_profiles")
-        .select(PROFILE_SELECT_WITH_CHAT_SELECTIONS)
+        .select(PROFILE_SELECT_NEWEST)
         .eq("user_id", userId);
     const newest =
         mode === "single"
@@ -275,15 +275,11 @@ async function selectProfile(
             : await newestQuery.maybeSingle();
     if (!newest.error) return newest;
     let cascadeError: unknown = newest.error;
-    let transparentTablesAvailable = true;
 
-    // The appearance preference may be deployed before its migration. Keep
-    // every older profile field and use the default transparent table style.
-    if (isMissingProfileColumn(cascadeError, "transparent_tables")) {
-        transparentTablesAvailable = false;
+    if (isMissingProfileColumn(cascadeError, "memory_curator_model")) {
         const previousQuery = db
             .from("user_profiles")
-            .select(PROFILE_SELECT_NO_TRANSPARENT_TABLES)
+            .select(PROFILE_SELECT_NO_MEMORY_CURATOR_MODEL)
             .eq("user_id", userId);
         const previous =
             mode === "single"
@@ -292,7 +288,7 @@ async function selectProfile(
         if (!previous.error) {
             if (previous.data && typeof previous.data === "object") {
                 Object.assign(previous.data as Record<string, unknown>, {
-                    transparent_tables: true,
+                    memory_curator_model: null,
                 });
             }
             return previous;
@@ -303,13 +299,7 @@ async function selectProfile(
     if (isMissingProfileColumn(cascadeError, "last_selected_reasoning_level")) {
         const modelOnlyQuery = db
             .from("user_profiles")
-            .select(
-                transparentTablesAvailable
-                    ? PROFILE_SELECT_WITH_LAST_SELECTED_CHAT_MODEL
-                    : withoutTransparentTables(
-                          PROFILE_SELECT_WITH_LAST_SELECTED_CHAT_MODEL,
-                      ),
-            )
+            .select(PROFILE_SELECT_WITH_LAST_SELECTED_CHAT_MODEL)
             .eq("user_id", userId);
         const modelOnly =
             mode === "single"
@@ -329,11 +319,7 @@ async function selectProfile(
     if (isMissingProfileColumn(cascadeError, "last_selected_chat_model")) {
         const fullQuery = db
             .from("user_profiles")
-            .select(
-                transparentTablesAvailable
-                    ? PROFILE_SELECT
-                    : withoutTransparentTables(PROFILE_SELECT),
-            )
+            .select(PROFILE_SELECT)
             .eq("user_id", userId);
         const full =
             mode === "single"
@@ -613,6 +599,10 @@ function serializeProfile(
             row.tabular_model,
             routerModels,
         ),
+        memoryCuratorModel: normalizeOptionalModelPreference(
+            row.memory_curator_model,
+            routerModels,
+        ),
         lastSelectedChatModel: normalizeOptionalModelPreference(
             row.last_selected_chat_model,
             routerModels,
@@ -624,7 +614,7 @@ function serializeProfile(
         legalResearchUs: row.legal_research_us !== false,
         quickActionsVisible: row.quick_actions_visible !== false,
         darkMode: row.dark_mode === true,
-        transparentTables: row.transparent_tables !== false,
+        projectMemoryDefault: row.project_memory_default !== false,
         ...Object.fromEntries(
             ROUTER_SLUGS.map((slug) => [
                 ROUTER_PROFILE_FIELDS[slug],
@@ -780,6 +770,7 @@ function validateProfilePayload(body: unknown):
               practice_areas?: string[];
               title_model?: string | null;
               tabular_model?: string | null;
+              memory_curator_model?: string | null;
               last_selected_chat_model?: string | null;
               last_selected_reasoning_level?: string | null;
               legal_research_us?: boolean;
@@ -803,12 +794,13 @@ function validateProfilePayload(body: unknown):
         "practiceAreas",
         "titleModel",
         "tabularModel",
+        "memoryCuratorModel",
         "lastSelectedChatModel",
         "lastSelectedReasoningLevel",
         "legalResearchUs",
         "quickActionsVisible",
         "darkMode",
-        "transparentTables",
+        "projectMemoryDefault",
         ...ROUTER_SLUGS.map((slug) => ROUTER_PROFILE_FIELDS[slug]),
     ]);
     const invalidField = Object.keys(raw).find(
@@ -830,12 +822,13 @@ function validateProfilePayload(body: unknown):
         practice_areas?: string[];
         title_model?: string | null;
         tabular_model?: string | null;
+        memory_curator_model?: string | null;
         last_selected_chat_model?: string | null;
         last_selected_reasoning_level?: string | null;
         legal_research_us?: boolean;
         quick_actions_visible?: boolean;
         dark_mode?: boolean;
-        transparent_tables?: boolean;
+        project_memory_default?: boolean;
         updated_at: string;
     } = { updated_at: new Date().toISOString() };
     const routerModels: Partial<Record<RouterSlug, string[]>> = {};
@@ -905,6 +898,29 @@ function validateProfilePayload(body: unknown):
                 return { ok: false, detail: "Unsupported titleModel" };
             }
             update.title_model = resolved;
+        }
+    }
+
+    if ("memoryCuratorModel" in raw) {
+        if (
+            raw.memoryCuratorModel === null ||
+            raw.memoryCuratorModel === ""
+        ) {
+            update.memory_curator_model = null;
+        } else if (typeof raw.memoryCuratorModel !== "string") {
+            return {
+                ok: false,
+                detail: "memoryCuratorModel must be a string or null",
+            };
+        } else {
+            const resolved = resolveModel(raw.memoryCuratorModel, "");
+            if (!resolved) {
+                return {
+                    ok: false,
+                    detail: "Unsupported memoryCuratorModel",
+                };
+            }
+            update.memory_curator_model = resolved;
         }
     }
 
@@ -1009,14 +1025,14 @@ function validateProfilePayload(body: unknown):
         update.dark_mode = raw.darkMode;
     }
 
-    if ("transparentTables" in raw) {
-        if (typeof raw.transparentTables !== "boolean") {
+    if ("projectMemoryDefault" in raw) {
+        if (typeof raw.projectMemoryDefault !== "boolean") {
             return {
                 ok: false,
-                detail: "transparentTables must be a boolean",
+                detail: "projectMemoryDefault must be a boolean",
             };
         }
-        update.transparent_tables = raw.transparentTables;
+        update.project_memory_default = raw.projectMemoryDefault;
     }
 
     return { ok: true, update, routerModels };
@@ -1899,6 +1915,29 @@ userRouter.delete(
             console.error("[user/tabular-reviews] delete failed", {
                 userId,
                 error: detail,
+            });
+            sendInternalError(res, err);
+        }
+    },
+);
+
+// DELETE /user/memories
+// Wipes the user's app memory and memories belonging to private projects they
+// created. Organization and merely shared projects are intentionally outside
+// this account-level destructive action.
+userRouter.delete(
+    "/memories",
+    requireAuth,
+    requireMfaIfEnrolled,
+    async (_req, res) => {
+        const userId = res.locals.userId as string;
+        try {
+            await deleteUserPrivateMemories(createServerSupabase(), userId);
+            res.status(204).send();
+        } catch (err) {
+            console.error("[user/memories] delete failed", {
+                userId,
+                error: errorMessage(err),
             });
             sendInternalError(res, err);
         }

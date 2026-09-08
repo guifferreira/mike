@@ -3,27 +3,30 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MikeApiError,
-  downloadUserMemoryMarkdown,
   getUserMemory,
-  listUserMemoryVersions,
-  restoreUserMemoryVersion,
   setUserMemoryEnabled,
   updateUserMemory,
-  wipeUserMemory,
   type MemoryCurrent,
-  type MemoryVersion,
 } from "@/app/lib/mikeApi";
 import { UserMemoryPage } from "./UserMemoryPage";
 
 vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/app/lib/mikeApi")>()),
-  downloadUserMemoryMarkdown: vi.fn(),
   getUserMemory: vi.fn(),
-  listUserMemoryVersions: vi.fn(),
-  restoreUserMemoryVersion: vi.fn(),
   setUserMemoryEnabled: vi.fn(),
   updateUserMemory: vi.fn(),
-  wipeUserMemory: vi.fn(),
+}));
+
+const profileState = vi.hoisted(() => ({
+  projectMemoryDefault: true,
+  updateProjectMemoryDefault: vi.fn(),
+}));
+
+vi.mock("@/app/contexts/UserProfileContext", () => ({
+  useUserProfile: () => ({
+    profile: { projectMemoryDefault: profileState.projectMemoryDefault },
+    updateProjectMemoryDefault: profileState.updateProjectMemoryDefault,
+  }),
 }));
 
 vi.mock("@/app/components/ui/markdown-editor", () => ({
@@ -51,7 +54,7 @@ function current(overrides: Partial<MemoryCurrent> = {}): MemoryCurrent {
   return {
     enabled: true,
     content: "# Preferences",
-    version: 2,
+    revision: 2,
     hash: "hash-2",
     updated_at: "2026-09-05T10:00:00.000Z",
     updated_by: "user-1",
@@ -61,69 +64,27 @@ function current(overrides: Partial<MemoryCurrent> = {}): MemoryCurrent {
   };
 }
 
-function version(overrides: Partial<MemoryVersion> = {}): MemoryVersion {
-  return {
-    id: "version-2",
-    version: 2,
-    hash: "hash-2",
-    size_bytes: 128,
-    created_at: "2026-09-05T10:00:00.000Z",
-    updated_by: "user-1",
-    source: "manual",
-    model: null,
-    source_surface: null,
-    source_chat_id: null,
-    source_turn_id: null,
-    change_summary: null,
-    ...overrides,
-  };
-}
-
 describe("UserMemoryPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
+    profileState.projectMemoryDefault = true;
+    profileState.updateProjectMemoryDefault.mockResolvedValue(undefined);
     vi.mocked(getUserMemory).mockResolvedValue(current());
-    vi.mocked(listUserMemoryVersions).mockResolvedValue([
-      version(),
-      version({
-        id: "version-1",
-        version: 1,
-        source: "curator",
-        source_surface: "chat",
-        change_summary: "Remembered a concise drafting preference",
-      }),
-    ]);
     vi.mocked(updateUserMemory).mockImplementation(async (content) =>
-      current({ content, version: 3, hash: "hash-3" }),
-    );
-    vi.mocked(restoreUserMemoryVersion).mockResolvedValue(
-      current({ content: "# Earlier", version: 3, hash: "hash-3" }),
+      current({ content, revision: 3, hash: "hash-3" }),
     );
     vi.mocked(setUserMemoryEnabled).mockImplementation(async (enabled) =>
       current({
         enabled,
         content: "",
-        version: 3,
+        revision: 3,
         hash: null,
         updated_at: null,
         updated_by: null,
         source: "settings",
       }),
     );
-    vi.mocked(wipeUserMemory).mockResolvedValue(
-      current({
-        content: "",
-        version: 3,
-        hash: null,
-        updated_at: null,
-        updated_by: null,
-        source: "wipe",
-      }),
-    );
-    vi.mocked(downloadUserMemoryMarkdown).mockResolvedValue({
-      blob: new Blob(["# Preferences"]),
-      filename: "memory.md",
-    });
   });
 
   it("loads the current file independently and autosaves editor changes", async () => {
@@ -137,18 +98,9 @@ describe("UserMemoryPage", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true");
     expect(toggle).toHaveClass("focus-visible:ring-2");
     expect(editor).toHaveValue("# Preferences");
-    expect(
-      screen.getByText(
-        /may curate this private Markdown file after saved conversations/i,
-      ),
-    ).toBeVisible();
-    expect(screen.getByText("Version 2 · Current")).toBeVisible();
-    expect(
-      screen.getByText(/Last updated .* · Version 2 · Manual edit/),
-    ).toBeVisible();
-    expect(
-      screen.getByText("Remembered a concise drafting preference"),
-    ).toBeVisible();
+    // A quiet, up-to-date file reports nothing: no timestamp, no source.
+    expect(screen.queryByText(/Last updated/)).toBeNull();
+    expect(screen.queryByText(/Manual edit/)).toBeNull();
 
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
@@ -167,14 +119,14 @@ describe("UserMemoryPage", () => {
 
   it("adopts server-normalized Markdown without repeatedly saving it", async () => {
     vi.mocked(updateUserMemory).mockResolvedValue(
-      current({ content: "# Normalized", version: 3, hash: "hash-3" }),
+      current({ content: "# Normalized", revision: 3, hash: "hash-3" }),
     );
     render(<UserMemoryPage />);
 
     const editor = await screen.findByRole("textbox", {
       name: "App-wide memory",
     });
-    await screen.findByText("Version 2 · Current");
+    await screen.findByRole("switch", { name: "App-wide memory" });
 
     vi.useFakeTimers();
     try {
@@ -193,58 +145,6 @@ describe("UserMemoryPage", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("keeps the editor available when only version history fails", async () => {
-    vi.mocked(listUserMemoryVersions).mockRejectedValue(
-      new Error("history unavailable"),
-    );
-
-    render(<UserMemoryPage />);
-
-    expect(
-      await screen.findByRole("textbox", { name: "App-wide memory" }),
-    ).toHaveValue("# Preferences");
-    expect(
-      await screen.findByText("Version history could not be refreshed."),
-    ).toBeVisible();
-    expect(
-      screen.queryByText("Memory could not be loaded"),
-    ).not.toBeInTheDocument();
-  });
-
-  it("ignores an older history response after autosave refreshes it", async () => {
-    let resolveInitialHistory!: (value: MemoryVersion[]) => void;
-    vi.mocked(listUserMemoryVersions)
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveInitialHistory = resolve;
-        }),
-      )
-      .mockResolvedValueOnce([
-        version({ id: "version-3", version: 3, hash: "hash-3" }),
-      ]);
-    const user = userEvent.setup();
-    render(<UserMemoryPage />);
-
-    const editor = await screen.findByRole("textbox", {
-      name: "App-wide memory",
-    });
-    await waitFor(() => expect(listUserMemoryVersions).toHaveBeenCalledOnce());
-    await user.clear(editor);
-    await user.type(editor, "# Updated");
-
-    expect(
-      await screen.findByText("Version 3 · Current", {}, { timeout: 3000 }),
-    ).toBeVisible();
-
-    await act(async () => {
-      resolveInitialHistory([version({ id: "version-1", version: 1 })]);
-      await Promise.resolve();
-    });
-
-    expect(screen.getByText("Version 3 · Current")).toBeVisible();
-    expect(screen.queryByText("Version 1")).toBeNull();
   });
 
   it("serializes saves without locking or overwriting newer editor input", async () => {
@@ -271,14 +171,14 @@ describe("UserMemoryPage", () => {
     expect(
       screen.getByRole("switch", { name: "App-wide memory" }),
     ).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
 
     await user.type(editor, " and newer");
     expect(editor).toHaveValue("# Pending and newer");
 
     await act(async () => {
       resolveSave(
-        current({ content: "# Pending", version: 3, hash: "hash-3" }),
+        current({ content: "# Pending", revision: 3, hash: "hash-3" }),
       );
     });
     expect(editor).toHaveValue("# Pending and newer");
@@ -295,7 +195,7 @@ describe("UserMemoryPage", () => {
   it("preserves a stale draft and requires an explicit conflict choice", async () => {
     const latest = current({
       content: "# Automatic update",
-      version: 3,
+      revision: 3,
       hash: "hash-3",
     });
     vi.mocked(getUserMemory)
@@ -305,12 +205,12 @@ describe("UserMemoryPage", () => {
       .mockRejectedValueOnce(
         new MikeApiError({
           status: 409,
-          code: "memory_version_conflict",
+          code: "memory_revision_conflict",
           message: "Memory changed",
         }),
       )
       .mockResolvedValueOnce(
-        current({ content: "# My draft", version: 4, hash: "hash-4" }),
+        current({ content: "# My draft", revision: 4, hash: "hash-4" }),
       );
     const user = userEvent.setup();
     render(<UserMemoryPage />);
@@ -387,31 +287,12 @@ describe("UserMemoryPage", () => {
     );
   });
 
-  it("confirms a restore and sends the current version for concurrency", async () => {
-    const user = userEvent.setup();
-    render(<UserMemoryPage />);
-
-    await screen.findByRole("textbox", { name: "App-wide memory" });
-    await user.click(screen.getByRole("button", { name: "Restore" }));
-    expect(screen.getByText("Restore version 1?")).toBeVisible();
-
-    const restoreButtons = screen.getAllByRole("button", {
-      name: "Restore",
-    });
-    await user.click(restoreButtons.at(-1)!);
-
-    await waitFor(() =>
-      expect(restoreUserMemoryVersion).toHaveBeenCalledWith("version-1", 2),
-    );
-    expect(await screen.findByText("Version 1 restored")).toBeVisible();
-  });
-
   it("enables memory from the same settings page and reveals a blank editor", async () => {
     vi.mocked(getUserMemory).mockResolvedValue(
       current({
         enabled: false,
         content: "",
-        version: 0,
+        revision: 0,
         hash: null,
         updated_at: null,
         updated_by: null,
@@ -438,7 +319,7 @@ describe("UserMemoryPage", () => {
     ).toHaveValue("");
   });
 
-  it("confirms disable, warns about the draft, and clears editor history", async () => {
+  it("confirms disable and warns about the unsaved draft", async () => {
     const user = userEvent.setup();
     render(<UserMemoryPage />);
 
@@ -466,38 +347,13 @@ describe("UserMemoryPage", () => {
     expect(
       screen.queryByRole("textbox", { name: "App-wide memory" }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("Version 2 · Current")).not.toBeInTheDocument();
-  });
-
-  it("deletes memory and history without disabling it", async () => {
-    const user = userEvent.setup();
-    render(<UserMemoryPage />);
-
-    const editor = await screen.findByRole("textbox", {
-      name: "App-wide memory",
-    });
-    await user.click(screen.getByRole("button", { name: "Delete" }));
-    expect(wipeUserMemory).not.toHaveBeenCalled();
-    expect(screen.getByText("Delete app-wide memory?")).toBeVisible();
-
-    const deleteButtons = screen.getAllByRole("button", {
-      name: "Delete",
-    });
-    await user.click(deleteButtons.at(-1)!);
-
-    await waitFor(() => expect(wipeUserMemory).toHaveBeenCalledOnce());
-    expect(editor).toHaveValue("");
-    expect(
-      screen.getByRole("switch", { name: "App-wide memory" }),
-    ).toHaveAttribute("aria-checked", "true");
-    expect(screen.queryByText("Version 2 · Current")).not.toBeInTheDocument();
   });
 
   it("treats a null head as empty even when its CAS version is positive", async () => {
     vi.mocked(getUserMemory).mockResolvedValue(
       current({
         content: "",
-        version: 7,
+        revision: 7,
         hash: null,
         updated_at: null,
         updated_by: null,
@@ -508,19 +364,79 @@ describe("UserMemoryPage", () => {
 
     await screen.findByRole("textbox", { name: "App-wide memory" });
     expect(
-      screen.getByRole("button", { name: "Download memory.md" }),
-    ).toBeDisabled();
-    expect(screen.getByText("No saved memory yet")).toBeVisible();
-    expect(screen.queryByText("Version 7")).not.toBeInTheDocument();
+      screen.queryByRole("button", { name: "Download memory.md" }),
+    ).toBeNull();
+    expect(screen.queryByText(/No saved memory yet/)).toBeNull();
+    // The CAS token is concurrency plumbing; it must never reach the page.
+    expect(screen.queryByText(/Version/)).not.toBeInTheDocument();
   });
 
-  it("shows automatic-review status in the settings control", async () => {
+  it("shows a failed automatic update once and remembers dismissal", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getUserMemory).mockResolvedValue(current({ status: "failed" }));
+
+    const { unmount } = render(<UserMemoryPage />);
+
+    expect(
+      await screen.findByRole("alert", {
+        name: undefined,
+      }),
+    ).toHaveTextContent("The latest automatic update failed");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss warning" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    unmount();
+    render(<UserMemoryPage />);
+    await screen.findByRole("textbox", { name: "App-wide memory" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("saves the account default applied to new projects", async () => {
+    const user = userEvent.setup();
+    render(<UserMemoryPage />);
+
+    const toggle = await screen.findByRole("switch", {
+      name: "Project memory for new projects",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    await user.click(toggle);
+
+    await waitFor(() =>
+      expect(profileState.updateProjectMemoryDefault).toHaveBeenCalledWith(
+        false,
+      ),
+    );
+    // Turning app-wide memory off must not disable it: the two settings are
+    // independent, and other owners still control their own projects.
+    expect(setUserMemoryEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps the project default usable when the memory file cannot load", async () => {
+    profileState.projectMemoryDefault = false;
+    vi.mocked(getUserMemory).mockRejectedValue(new Error("unavailable"));
+
+    render(<UserMemoryPage />);
+
+    expect(
+      await screen.findByText("Memory settings are unavailable"),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("switch", { name: "Project memory for new projects" }),
+    ).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("reports a scheduled automatic review beside the file heading", async () => {
     vi.mocked(getUserMemory).mockResolvedValue(
       current({ status: "scheduled" }),
     );
 
     render(<UserMemoryPage />);
 
-    expect(await screen.findByText("On · review scheduled")).toBeVisible();
+    // The toggle carries no on/off label of its own, so this stamp is the
+    // only place the pending review is announced.
+    expect(await screen.findByText(/Memory review scheduled/)).toBeVisible();
+    expect(screen.queryByText(/^On\b/)).toBeNull();
   });
 });

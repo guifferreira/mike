@@ -10,12 +10,9 @@ import {
   enableMemoryFile,
   ensureMemoryFile,
   getMemoryCurrent,
-  listMemoryVersions,
   MemoryDisabledError,
   MemoryValidationError,
-  MemoryVersionConflictError,
-  memoryVersionContent,
-  restoreMemoryVersion,
+  MemoryRevisionConflictError,
   wipeMemoryFile,
   writeMemoryFile,
   type MemoryFileRow,
@@ -27,9 +24,6 @@ import { requireAuth } from "../middleware/auth";
 
 export const userMemoryRouter = Router();
 export const projectMemoryRouter = Router({ mergeParams: true });
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 userMemoryRouter.use(requireAuth);
 projectMemoryRouter.use(requireAuth);
@@ -52,7 +46,7 @@ async function userContext(
 ): Promise<MemoryRequestContext | null> {
   const ownerId = res.locals.userId as string;
   const db = createServerSupabase();
-  const file = await ensureMemoryFile(db, "user", ownerId, true);
+  const file = await ensureMemoryFile(db, "user", ownerId);
   return { scope: "user", ownerId, file };
 }
 
@@ -76,12 +70,12 @@ function projectContext(required: Capability) {
         .json({ detail: "You do not have permission to manage this memory." });
       return null;
     }
-    const file = await ensureMemoryFile(db, "project", projectId, true);
+    const file = await ensureMemoryFile(db, "project", projectId);
     return { scope: "project", ownerId: projectId, file };
   };
 }
 
-function expectedVersion(value: unknown): number | null {
+function expectedRevision(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : null;
@@ -89,7 +83,7 @@ function expectedVersion(value: unknown): number | null {
 
 async function currentForContext(ctx: MemoryRequestContext) {
   return (
-    await getMemoryCurrent(createServerSupabase(), ctx.scope, ctx.ownerId, true)
+    await getMemoryCurrent(createServerSupabase(), ctx.scope, ctx.ownerId)
   ).current;
 }
 
@@ -98,7 +92,7 @@ async function sendMemoryError(
   error: unknown,
   ctx?: MemoryRequestContext,
 ): Promise<void> {
-  if (error instanceof MemoryVersionConflictError && ctx) {
+  if (error instanceof MemoryRevisionConflictError && ctx) {
     let current;
     try {
       current = await currentForContext(ctx);
@@ -106,9 +100,9 @@ async function sendMemoryError(
       current = undefined;
     }
     res.status(409).json({
-      code: "memory_version_conflict",
+      code: "memory_revision_conflict",
       detail:
-        "Memory changed since it was loaded. Review the latest version and try again.",
+        "Memory changed since it was loaded. Review what is saved now and try again.",
       ...(current ? { current } : {}),
     });
     return;
@@ -169,11 +163,11 @@ function installMemoryRoutes(
   router.put("/", async (req, res) => {
     let ctx: MemoryRequestContext | null = null;
     try {
-      const parsedVersion = expectedVersion(req.body?.expected_version);
+      const parsedVersion = expectedRevision(req.body?.expected_revision);
       if (parsedVersion == null || typeof req.body?.content !== "string") {
         return void res.status(400).json({
           detail:
-            "content and a non-negative integer expected_version are required",
+            "content and a non-negative integer expected_revision are required",
         });
       }
       ctx = await writeContext(req, res);
@@ -183,7 +177,7 @@ function installMemoryRoutes(
           db: createServerSupabase(),
           file: ctx.file,
           content: req.body.content,
-          expectedVersion: parsedVersion,
+          expectedRevision: parsedVersion,
           source: "manual",
           updatedBy: res.locals.userId as string,
         })
@@ -240,73 +234,6 @@ function installMemoryRoutes(
     }
   });
 
-  router.get("/versions", async (req, res) => {
-    try {
-      const ctx = await readContext(req, res);
-      if (!ctx) return;
-      res.json({
-        versions: await listMemoryVersions(createServerSupabase(), ctx.file.id),
-      });
-    } catch (error) {
-      await sendMemoryError(res, error);
-    }
-  });
-
-  router.get("/versions/:versionId/memory.md", async (req, res) => {
-    try {
-      if (!UUID_PATTERN.test(req.params.versionId)) {
-        return void res
-          .status(404)
-          .json({ detail: "Memory version not found" });
-      }
-      const ctx = await readContext(req, res);
-      if (!ctx) return;
-      const content = await memoryVersionContent(
-        createServerSupabase(),
-        ctx.file.id,
-        req.params.versionId,
-      );
-      if (content == null)
-        return void res
-          .status(404)
-          .json({ detail: "Memory version not found" });
-      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-      res.setHeader("Content-Disposition", 'attachment; filename="memory.md"');
-      res.send(content);
-    } catch (error) {
-      await sendMemoryError(res, error);
-    }
-  });
-
-  router.post("/versions/:versionId/restore", async (req, res) => {
-    let ctx: MemoryRequestContext | null = null;
-    try {
-      if (!UUID_PATTERN.test(req.params.versionId)) {
-        return void res
-          .status(404)
-          .json({ detail: "Memory version not found" });
-      }
-      const parsedVersion = expectedVersion(req.body?.expected_version);
-      if (parsedVersion == null) {
-        return void res.status(400).json({
-          detail: "a non-negative integer expected_version is required",
-        });
-      }
-      ctx = await writeContext(req, res);
-      if (!ctx) return;
-      res.json(
-        await restoreMemoryVersion({
-          db: createServerSupabase(),
-          file: ctx.file,
-          versionId: req.params.versionId,
-          expectedVersion: parsedVersion,
-          updatedBy: res.locals.userId as string,
-        }),
-      );
-    } catch (error) {
-      await sendMemoryError(res, error, ctx ?? undefined);
-    }
-  });
 }
 
 installMemoryRoutes(userMemoryRouter, userContext, userContext, userContext);

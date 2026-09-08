@@ -424,33 +424,25 @@ export async function deleteAllTabularReviews(): Promise<void> {
     return apiRequest<void>("/user/tabular-reviews", { method: "DELETE" });
 }
 
+export async function deleteAllMemories(): Promise<void> {
+    return apiRequest<void>("/user/memories", { method: "DELETE" });
+}
+
 export type MemoryStatus = "idle" | "scheduled" | "processing" | "failed";
 
 export interface MemoryCurrent {
     enabled: boolean;
     content: string;
-    version: number;
+    /** Monotonic change token for compare-and-swap; nothing is kept per value. */
+    revision: number;
     hash: string | null;
     updated_at: string | null;
     /** Actor provenance only. The endpoint deliberately does not expose email. */
     updated_by: string | null;
-    source: "manual" | "curator" | "restore" | "wipe" | "settings" | null;
+    source: "manual" | "curator" | "wipe" | "settings" | null;
     status: MemoryStatus;
-}
-
-export interface MemoryVersion {
-    id: string;
-    version: number;
-    hash: string;
-    size_bytes: number;
-    created_at: string;
-    updated_by: string | null;
-    source: "manual" | "curator" | "restore";
-    model: string | null;
-    source_surface: "chat" | "word" | "tabular" | null;
-    source_chat_id: string | null;
-    source_turn_id: string | null;
-    change_summary: string | null;
+    /** Changes whenever scheduling, processing, or failure status changes. */
+    status_updated_at?: string;
 }
 
 export async function getUserMemory(
@@ -461,14 +453,14 @@ export async function getUserMemory(
 
 export async function updateUserMemory(
     content: string,
-    expectedVersion: number,
+    expectedRevision: number,
 ): Promise<MemoryCurrent> {
     return apiRequest<MemoryCurrent>("/user/memory", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             content,
-            expected_version: expectedVersion,
+            expected_revision: expectedRevision,
         }),
     });
 }
@@ -481,41 +473,6 @@ export async function setUserMemoryEnabled(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
     });
-}
-
-export async function wipeUserMemory(): Promise<MemoryCurrent> {
-    return apiRequest<MemoryCurrent>("/user/memory", { method: "DELETE" });
-}
-
-export async function listUserMemoryVersions(
-    signal?: AbortSignal,
-): Promise<MemoryVersion[]> {
-    const response = await apiRequest<{ versions: MemoryVersion[] }>(
-        "/user/memory/versions",
-        { signal },
-    );
-    return response.versions;
-}
-
-export async function restoreUserMemoryVersion(
-    versionId: string,
-    expectedVersion: number,
-): Promise<MemoryCurrent> {
-    return apiRequest<MemoryCurrent>(
-        `/user/memory/versions/${encodeURIComponent(versionId)}/restore`,
-        {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ expected_version: expectedVersion }),
-        },
-    );
-}
-
-export async function downloadUserMemoryMarkdown(): Promise<{
-    blob: Blob;
-    filename: string | null;
-}> {
-    return apiBlobRequest("/user/memory/memory.md");
 }
 
 export async function getProjectMemory(
@@ -531,7 +488,7 @@ export async function getProjectMemory(
 export async function updateProjectMemory(
     projectId: string,
     content: string,
-    expectedVersion: number,
+    expectedRevision: number,
 ): Promise<MemoryCurrent> {
     return apiRequest<MemoryCurrent>(
         `/projects/${encodeURIComponent(projectId)}/memory`,
@@ -540,7 +497,7 @@ export async function updateProjectMemory(
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 content,
-                expected_version: expectedVersion,
+                expected_revision: expectedRevision,
             }),
         },
     );
@@ -569,39 +526,6 @@ export async function wipeProjectMemory(
     );
 }
 
-export async function listProjectMemoryVersions(
-    projectId: string,
-    signal?: AbortSignal,
-): Promise<MemoryVersion[]> {
-    const response = await apiRequest<{ versions: MemoryVersion[] }>(
-        `/projects/${encodeURIComponent(projectId)}/memory/versions`,
-        { signal },
-    );
-    return response.versions;
-}
-
-export async function restoreProjectMemoryVersion(
-    projectId: string,
-    versionId: string,
-    expectedVersion: number,
-): Promise<MemoryCurrent> {
-    return apiRequest<MemoryCurrent>(
-        `/projects/${encodeURIComponent(projectId)}/memory/versions/${encodeURIComponent(versionId)}/restore`,
-        {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ expected_version: expectedVersion }),
-        },
-    );
-}
-
-export async function downloadProjectMemoryMarkdown(
-    projectId: string,
-): Promise<{ blob: Blob; filename: string | null }> {
-    return apiBlobRequest(
-        `/projects/${encodeURIComponent(projectId)}/memory/memory.md`,
-    );
-}
 
 export async function exportAccountData(): Promise<{
     blob: Blob;
@@ -636,7 +560,8 @@ export type UserExportType =
     | "chats"
     | "tabular-reviews"
     | "audit-csv"
-    | "documents-zip";
+    | "documents-zip"
+    | "memory-zip";
 
 export type UserExportStatus =
     | { status: "pending" }
@@ -712,13 +637,14 @@ export interface UserProfile {
     tier: string;
     titleModel: string | null;
     tabularModel: string | null;
+    memoryCuratorModel: string | null;
     lastSelectedChatModel: string | null;
     lastSelectedReasoningLevel: NonNullable<Message["reasoning"]>;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
     quickActionsVisible: boolean;
     darkMode: boolean;
-    transparentTables: boolean;
+    projectMemoryDefault: boolean;
     openRouterModels: string[];
     vercelModels: string[];
     openCodeGoModels: string[];
@@ -827,12 +753,13 @@ export async function updateUserProfile(payload: {
     practiceAreas?: string[];
     titleModel?: string | null;
     tabularModel?: string | null;
+    memoryCuratorModel?: string | null;
     lastSelectedChatModel?: string | null;
     lastSelectedReasoningLevel?: NonNullable<Message["reasoning"]>;
     legalResearchUs?: boolean;
     quickActionsVisible?: boolean;
     darkMode?: boolean;
-    transparentTables?: boolean;
+    projectMemoryDefault?: boolean;
     openRouterModels?: string[];
     vercelModels?: string[];
     openCodeGoModels?: string[];

@@ -120,24 +120,6 @@ function makeDb(
             removeRows("word_chat_messages", (row) =>
                 removedIds.includes(String(row.chat_id)),
             );
-        } else if (table === "memory_files") {
-            const versions = removeRows("memory_file_versions", (row) =>
-                removedIds.includes(String(row.memory_file_id)),
-            );
-            const paths = versions
-                .map((row) => row.storage_path)
-                .filter((path): path is string => typeof path === "string");
-            if (paths.length > 0) {
-                const jobs = tables.db_jobs ?? (tables.db_jobs = []);
-                jobs.push({
-                    id: `cleanup-cascade-${removedIds.join("-")}`,
-                    kind: "storage.cleanup",
-                    payload: { keys: paths, prefixes: [] },
-                });
-            }
-            removeRows("memory_object_candidates", (row) =>
-                removedIds.includes(String(row.memory_file_id)),
-            );
         }
     };
     const db = {
@@ -151,30 +133,22 @@ function makeDb(
             if (!file) {
                 return { data: null, error: { message: "memory_file_not_found" } };
             }
-            const versions = (tables.memory_file_versions ?? []).filter(
-                (row) => row.memory_file_id === file.id,
-            );
-            const paths = versions
-                .map((row) => row.storage_path)
-                .filter((path): path is string => typeof path === "string");
-            if (paths.length > 0) {
-                const jobs = tables.db_jobs ?? (tables.db_jobs = []);
-                jobs.push({
-                    id: `cleanup-${String(file.id)}`,
-                    kind: "storage.cleanup",
-                    payload: { keys: paths, prefixes: [] },
-                });
-            }
-            tables.memory_file_versions = (
-                tables.memory_file_versions ?? []
-            ).filter((row) => row.memory_file_id !== file.id);
             Object.assign(file, {
                 enabled: args.p_enabled,
-                version: 0,
-                current_version_id: null,
+                epoch: Number(file.epoch ?? 0) + 1,
+                version: Number(file.version ?? 0) + 1,
+                content: "",
+                content_sha256: null,
+                size_bytes: 0,
             });
             return {
-                data: [{ storage_paths: paths, new_epoch: 1 }],
+                data: [
+                    {
+                        new_epoch: Number(file.epoch),
+                        new_revision: Number(file.version),
+                        effective_enabled: file.enabled,
+                    },
+                ],
                 error: null,
             };
         },
@@ -439,20 +413,6 @@ describe("deleteUserProjects", () => {
                     enabled: true,
                 },
             ],
-            memory_file_versions: [
-                {
-                    id: "memory-version-p1",
-                    memory_file_id: "memory-p1",
-                    storage_path:
-                        "memories/projects/p1/versions/v1/memory.md",
-                },
-                {
-                    id: "memory-version-other",
-                    memory_file_id: "memory-other",
-                    storage_path:
-                        "memories/projects/p-other/versions/v1/memory.md",
-                },
-            ],
         }, options);
 
     it("cascades project contents and storage files for owned projects", async () => {
@@ -468,18 +428,16 @@ describe("deleteUserProjects", () => {
         expect(ids(tables.tabular_review_chat_messages)).toEqual(["rm-other"]);
         expect(ids(tables.tabular_cells)).toEqual(["cell-other"]);
         expect(ids(tables.project_subfolders)).toEqual(["f-other"]);
-        expect(ids(tables.memory_file_versions)).toEqual([
-            "memory-version-other",
-        ]);
-        expect(tables.db_jobs).toContainEqual(
-            expect.objectContaining({
-                kind: "storage.cleanup",
-                payload: {
-                    keys: ["memories/projects/p1/versions/v1/memory.md"],
-                    prefixes: [],
-                },
-            }),
-        );
+        // Deleted projects' memory is emptied under its row lock before the
+        // rows cascade; a colleague's surviving project keeps its own.
+        expect(
+            (tables.memory_files ?? []).map((row) => [row.id, row.content]),
+        ).toEqual([["memory-other", undefined]]);
+        expect(
+            (tables.db_jobs ?? []).filter(
+                (job) => job.kind === "storage.cleanup",
+            ),
+        ).toEqual([]);
 
         const deletedPaths = deleteFileMock.mock.calls.map(([path]) => path);
         expect(deletedPaths.sort()).toEqual([
@@ -666,26 +624,6 @@ describe("deleteUserAccountData", () => {
                     enabled: true,
                 },
             ],
-            memory_file_versions: [
-                {
-                    id: "memory-version-u1",
-                    memory_file_id: "memory-u1",
-                    storage_path:
-                        "memories/users/u1/versions/v1/memory.md",
-                },
-                {
-                    id: "memory-version-p1",
-                    memory_file_id: "memory-p1",
-                    storage_path:
-                        "memories/projects/p1/versions/v1/memory.md",
-                },
-                {
-                    id: "memory-version-p-other",
-                    memory_file_id: "memory-p-other",
-                    storage_path:
-                        "memories/projects/p-other/versions/v1/memory.md",
-                },
-            ],
         }, options);
 
     it("removes the user's rows, files, and share references everywhere", async () => {
@@ -695,8 +633,6 @@ describe("deleteUserAccountData", () => {
                 ? ["documents/u1/orphan.bin"]
                 : prefix === "exports/u1/"
                   ? ["exports/u1/e1-account.json"]
-                  : prefix === "memories/users/u1/"
-                    ? ["memories/users/u1/versions/orphan/memory.md"]
                   : [],
         );
 
@@ -717,22 +653,21 @@ describe("deleteUserAccountData", () => {
         // purged on account deletion — only the other user's row survives.
         expect(ids(tables.audit_events)).toEqual(["a-other"]);
 
-        // Private app memory and personal-project memory are fenced and
-        // queued for object deletion before their owner rows cascade. A
-        // colleague's surviving project memory is not this account's data.
-        expect(ids(tables.memory_file_versions)).toEqual([
-            "memory-version-p-other",
-        ]);
+        // Private app memory and personal-project memory are emptied under
+        // their row locks before their owner rows cascade. A colleague's
+        // surviving project memory is not this account's data.
         expect(
-            (tables.db_jobs ?? [])
-                .filter((job) => job.kind === "storage.cleanup")
-                .flatMap((job) =>
-                    ((job.payload as { keys?: string[] })?.keys ?? []),
-                )
-                .sort(),
+            (tables.memory_files ?? []).map((row) => ({
+                id: row.id,
+                enabled: row.enabled,
+                content: row.content,
+            })),
         ).toEqual([
-            "memories/projects/p1/versions/v1/memory.md",
-            "memories/users/u1/versions/v1/memory.md",
+            // The app file is emptied and fenced here; its row goes with the
+            // auth.users cascade.
+            { id: "memory-u1", enabled: false, content: "" },
+            // A colleague's project keeps its own shared memory.
+            { id: "memory-p-other", enabled: true, content: undefined },
         ]);
 
         // Shares by the user and shares to the user's email are both removed.
@@ -764,13 +699,9 @@ describe("deleteUserAccountData", () => {
             // account erasure would leak them without this.
             "extracted-text/v-guest.txt",
             "extracted-text/v1.txt",
-            // Account erasure also catches immutable memory candidates that
-            // were never committed to version metadata.
-            "memories/users/u1/versions/orphan/memory.md",
         ]);
         expect(listFilesMock).toHaveBeenCalledWith("documents/u1/");
         expect(listFilesMock).toHaveBeenCalledWith("exports/u1/");
-        expect(listFilesMock).toHaveBeenCalledWith("memories/users/u1/");
     });
 
     it("treats document/workflow prefix cleanup as best-effort", async () => {
@@ -778,11 +709,7 @@ describe("deleteUserAccountData", () => {
         // Orphan sweep failing is tolerable: version-linked files were
         // already deleted (throwing) via the document_versions walk.
         listFilesMock.mockImplementation(async (prefix: string) => {
-            if (
-                prefix === "exports/u1/" ||
-                prefix === "memories/users/u1/"
-            )
-                return [];
+            if (prefix === "exports/u1/") return [];
             throw new Error("storage unavailable");
         });
         await expect(
@@ -821,33 +748,6 @@ describe("deleteUserAccountData", () => {
         await expect(
             deleteUserAccountData(db, "u1", "u1@example.com"),
         ).rejects.toThrow(/export/i);
-    });
-
-    it("propagates a memory-prefix listing failure so account erasure retries", async () => {
-        const { db } = fixture();
-        listFilesMock.mockImplementation(async (prefix: string) => {
-            if (prefix === "memories/users/u1/") {
-                throw new Error("storage unavailable");
-            }
-            return [];
-        });
-        await expect(
-            deleteUserAccountData(db, "u1", "u1@example.com"),
-        ).rejects.toThrow(/memory/i);
-    });
-
-    it("propagates a memory-object delete failure so account erasure retries", async () => {
-        const { db } = fixture();
-        const path = "memories/users/u1/versions/orphan/memory.md";
-        listFilesMock.mockImplementation(async (prefix: string) =>
-            prefix === "memories/users/u1/" ? [path] : [],
-        );
-        deleteFileMock.mockImplementation(async (candidate: string) => {
-            if (candidate === path) throw new Error("storage unavailable");
-        });
-        await expect(
-            deleteUserAccountData(db, "u1", "u1@example.com"),
-        ).rejects.toThrow(/memory/i);
     });
 
     it("keeps every storage byte until the last doomed row is gone", async () => {

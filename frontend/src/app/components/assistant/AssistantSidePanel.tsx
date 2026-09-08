@@ -306,7 +306,7 @@ export function AssistantSidePanel({
             {/* Tab strip (Chrome-style) */}
             <div
                 className={cn(
-                    "document-tab-strip flex items-end gap-1 px-1 pt-2",
+                    "document-tab-strip flex items-end gap-1 pt-2",
                 )}
             >
                 <div className="flex-1 flex items-end gap-1 overflow-hidden px-2">
@@ -390,7 +390,7 @@ export function AssistantSidePanel({
                                 onClick={() => onActivateTab(tab.id)}
                                 data-active={isActive ? "true" : "false"}
                                 className={cn(
-                                    "document-tab group relative flex items-center gap-1.5 pl-3 pr-1.5 h-8 min-w-0 max-w-[220px] rounded-t-lg cursor-pointer select-none transition-colors",
+                                    "document-tab group relative flex items-center gap-1.5 pl-3 pr-1.5 h-7 min-w-0 max-w-[220px] rounded-t-lg cursor-pointer select-none transition-colors",
                                     isActive ? "z-20" : "z-10",
                                     onReorderTabs && tabs.length > 1
                                         ? "cursor-grab active:cursor-grabbing"
@@ -462,7 +462,7 @@ export function AssistantSidePanel({
                         );
                     })}
                     <div
-                        className="h-8 min-w-4 flex-1"
+                        className="h-7 min-w-4 flex-1"
                         onDragOver={(event) => {
                             const draggedId =
                                 draggedTabIdRef.current ??
@@ -498,8 +498,10 @@ export function AssistantSidePanel({
                     />
                 </div>
                 <button
+                    type="button"
                     onClick={onCloseAll}
-                    className="shrink-0 mb-1 ml-1 rounded-lg p-1.5 text-gray-400 hover:text-gray-700"
+                    className="mr-1 shrink-0 self-center rounded-lg px-1.5 pb-1.5 text-gray-400 hover:text-gray-700"
+                    aria-label="Close panel"
                     title="Close panel"
                 >
                     <X className="h-4 w-4" />

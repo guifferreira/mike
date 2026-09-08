@@ -128,6 +128,7 @@ type FakeAssistantRow = {
     role: string;
     content: unknown;
     citations: unknown;
+    author_user_id: string;
     created_at: string;
 };
 
@@ -215,6 +216,7 @@ function realAssistantRow(content: unknown): FakeAssistantRow {
         role: "assistant",
         content,
         citations: null,
+        author_user_id: "user-1",
         created_at: "2026-01-01T00:00:00Z",
     };
 }
@@ -226,6 +228,7 @@ function reservationRow(): FakeAssistantRow {
         role: "assistant",
         content: null,
         citations: null,
+        author_user_id: "user-1",
         created_at: "2026-01-01T00:05:00Z",
     };
 }
@@ -277,6 +280,51 @@ describe("null-content assistant reservations", () => {
         );
 
         expect(enriched).toEqual(messages);
+    });
+
+    it("ends skipped ask-input context with the no-repeat placeholder instruction", async () => {
+        const { db } = makeFakeMessagesDb([
+            realAssistantRow([
+                { type: "ask_inputs", items: [] },
+                {
+                    type: "ask_inputs_response",
+                    responses: [
+                        {
+                            id: "law",
+                            kind: "text",
+                            question: "Governing law?",
+                            skipped: true,
+                        },
+                        {
+                            id: "clauses",
+                            kind: "multi_choice",
+                            question: "Optional clauses?",
+                            answers: ["Audit rights", "Non-solicitation"],
+                        },
+                    ],
+                },
+            ]),
+        ]);
+
+        const enriched = await enrichWithPriorEvents(
+            [
+                { role: "assistant", content: "I need your input." },
+                { role: "user", content: "I skipped governing law." },
+            ],
+            "chat-1",
+            db,
+            {},
+        );
+
+        expect(enriched[0].content).toContain(
+            'user selected: "Audit rights", "Non-solicitation"',
+        );
+        expect(enriched[0].content).toContain(
+            'user skipped: "Governing law?"',
+        );
+        expect(enriched[0].content).toMatch(
+            /Instruction: do not ask for any skipped input again.*placeholder in square brackets/,
+        );
     });
 
     it("ask-input responses append to the real last message, never the reservation", async () => {

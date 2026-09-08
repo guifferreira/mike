@@ -64,9 +64,8 @@ describe("WorkflowPromptEditor table picker", () => {
     );
 
     expect(container.firstElementChild).toHaveClass(
-      "workflow-prompt-editor-surface",
-      "markdown-editor-surface",
       "rounded-2xl",
+      "liquid-glass-flat",
     );
 
     await user.click(screen.getByRole("button", { name: "Insert table" }));

@@ -234,6 +234,18 @@ describe("chat request validation", () => {
                         question: " Registered address? ",
                         answer: " 1 Legal Plaza\nSingapore 048583 ",
                     },
+                    {
+                        id: " clauses ",
+                        kind: "multi_choice",
+                        question: " Optional clauses? ",
+                        answers: [" Non-solicitation ", " Audit rights "],
+                    },
+                    {
+                        id: " remedies ",
+                        kind: "multi_choice",
+                        question: " Remedies? ",
+                        skipped: true,
+                    },
                 ],
             }),
         ).toEqual({
@@ -257,6 +269,18 @@ describe("chat request validation", () => {
                         question: "Registered address?",
                         answer: "1 Legal Plaza\nSingapore 048583",
                     },
+                    {
+                        id: "clauses",
+                        kind: "multi_choice",
+                        question: "Optional clauses?",
+                        answers: ["Non-solicitation", "Audit rights"],
+                    },
+                    {
+                        id: "remedies",
+                        kind: "multi_choice",
+                        question: "Remedies?",
+                        skipped: true,
+                    },
                 ],
             },
         });
@@ -270,7 +294,20 @@ describe("chat request validation", () => {
         ],
         [
             { responses: [{ id: "choice-1", kind: "other" }] },
-            'ask_inputs_response.responses[0].kind must be "choice", "text", or "documents"',
+            'ask_inputs_response.responses[0].kind must be "choice", "multi_choice", "text", or "documents"',
+        ],
+        [
+            {
+                responses: [
+                    {
+                        id: "clauses",
+                        kind: "multi_choice",
+                        question: "Optional clauses?",
+                        answers: [],
+                    },
+                ],
+            },
+            "ask_inputs_response.responses[0].answers must contain at least one selection unless skipped",
         ],
         [
             {

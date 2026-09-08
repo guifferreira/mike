@@ -24,8 +24,8 @@ export const MEMORY_SYSTEM_POLICY = [
   "App-scoped memory remains private to the active user. In any project or otherwise shared conversation, never reveal, quote, summarize, or otherwise expose a detail found only in app memory; app memory may silently guide non-sensitive response preferences, and a detail may be discussed only when the active user also supplied it in the visible current conversation.",
 ].join("\n");
 
-/** Load enabled memory Markdown for an earliest, synthetic user message. */
-export async function buildMemoryPromptContext(args: {
+/** Fence every enabled memory file this conversation may see. */
+async function buildMemoryDocuments(args: {
   db: Db;
   userId: string;
   projectId?: string | null;
@@ -34,7 +34,7 @@ export async function buildMemoryPromptContext(args: {
   const scopes = [
     {
       scope: "app" as const,
-      load: () => getMemoryCurrent(args.db, "user", args.userId, true),
+      load: () => getMemoryCurrent(args.db, "user", args.userId),
     },
     ...(args.projectId
       ? [
@@ -45,7 +45,6 @@ export async function buildMemoryPromptContext(args: {
                 args.db,
                 "project",
                 args.projectId as string,
-                true,
               ),
           },
         ]
@@ -82,4 +81,52 @@ export async function buildMemoryPromptContext(args: {
       : "CONVERSATION AUDIENCE: PRIVATE TO THE ACTIVE USER.",
     ...documents,
   ].join("\n\n");
+}
+
+export type MemoryTurn = {
+  /**
+   * The synthetic turn carrying the fenced files, or null when there is no
+   * enabled memory to show. A caller places it before every real turn: the
+   * Markdown is written by a user or a project editor, so it must never gain
+   * system-role authority, and newer conversation evidence must outrank it.
+   */
+  message: { role: "user"; content: string } | null;
+  /** The caller's system prompt, with the memory policy appended when it applies. */
+  systemPrompt: string;
+};
+
+/**
+ * Everything a live conversation needs in order to show persisted memory to a
+ * model: what to say about it in the system prompt, and the untrusted turn
+ * that carries it. Callers decide only where the turn goes in their own
+ * message list — every rule about how memory may be used lives here.
+ */
+export async function buildMemoryTurn(args: {
+  db: Db;
+  userId: string;
+  systemPrompt: string;
+  /** False for surfaces that deliberately answer without memory. */
+  include?: boolean;
+  projectId?: string | null;
+  /** Whether anyone but the active user can see the persisted response. */
+  sharedAudience?: boolean;
+}): Promise<MemoryTurn> {
+  if (args.include === false) {
+    return { message: null, systemPrompt: args.systemPrompt };
+  }
+  const content = await buildMemoryDocuments({
+    db: args.db,
+    userId: args.userId,
+    projectId: args.projectId,
+    sharedAudience: args.sharedAudience,
+  });
+  if (!content) return { message: null, systemPrompt: args.systemPrompt };
+
+  const audiencePolicy = args.sharedAudience
+    ? "CURRENT MEMORY AUDIENCE: SHARED. Other people can see the persisted response. Never reveal, quote, summarize, or otherwise expose any detail found only in the active user's private app memory."
+    : "CURRENT MEMORY AUDIENCE: PRIVATE TO THE ACTIVE USER.";
+  return {
+    message: { role: "user", content },
+    systemPrompt: `${args.systemPrompt}\n\n${MEMORY_SYSTEM_POLICY}\n${audiencePolicy}`,
+  };
 }

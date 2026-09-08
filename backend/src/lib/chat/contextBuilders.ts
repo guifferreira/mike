@@ -175,6 +175,7 @@ export async function enrichWithPriorEvents(
   };
 
   const lines: string[] = [];
+  let skippedInputSeen = false;
   for (const ev of content as Record<string, unknown>[]) {
     if (ev?.type === "doc_created") {
       lines.push(
@@ -221,12 +222,26 @@ export async function enrichWithPriorEvents(
         if (!response || typeof response !== "object") continue;
         const row = response as Record<string, unknown>;
         if (row.skipped) {
-          lines.push("- user skipped an input");
+          skippedInputSeen = true;
+          const skippedLabel =
+            typeof row.question === "string" && row.question.trim()
+              ? row.question.trim()
+              : typeof row.id === "string" && row.id.trim()
+                ? row.id.trim()
+                : "an input";
+          lines.push(`- user skipped: ${untrustedRef(skippedLabel)}`);
         } else if (
           (row.kind === "choice" || row.kind === "text") &&
           typeof row.answer === "string"
         ) {
           lines.push(`- user answered: ${untrustedRef(row.answer)}`);
+        } else if (
+          row.kind === "multi_choice" &&
+          Array.isArray(row.answers)
+        ) {
+          lines.push(
+            `- user selected: ${row.answers.map(untrustedRef).join(", ")}`,
+          );
         } else if (row.kind === "documents" && Array.isArray(row.filenames)) {
           lines.push(
             `- user attached documents: ${
@@ -238,6 +253,11 @@ export async function enrichWithPriorEvents(
         }
       }
     }
+  }
+  if (skippedInputSeen) {
+    lines.push(
+      "- Instruction: do not ask for any skipped input again. If drafting or editing a document, insert a descriptive placeholder in square brackets wherever a skipped value is required.",
+    );
   }
   if (lines.length === 0) return messages;
   const summary = `\n\n[Tool activity in your previous turn]\n${lines.join("\n")}`;
@@ -402,8 +422,33 @@ export function parseAskInputsResponsePayload(
       const id = cleanAskInputResponseId(current.id);
       const kind = current.kind;
       const skipped = current.skipped === true;
-      if (!id || (kind !== "choice" && kind !== "text" && kind !== "documents"))
+      if (
+        !id ||
+        (kind !== "choice" &&
+          kind !== "multi_choice" &&
+          kind !== "text" &&
+          kind !== "documents")
+      )
         return null;
+      if (kind === "multi_choice") {
+        const question =
+          typeof current.question === "string"
+            ? current.question.trim().slice(0, 500)
+            : "";
+        const answers = (Array.isArray(current.answers) ? current.answers : [])
+          .filter((answer): answer is string => typeof answer === "string")
+          .map((answer) => answer.trim().slice(0, 1_000))
+          .filter(Boolean)
+          .slice(0, 9);
+        if (!question || (answers.length === 0 && !skipped)) return null;
+        return {
+          id,
+          kind,
+          question,
+          ...(answers.length ? { answers } : {}),
+          ...(skipped ? { skipped: true } : {}),
+        };
+      }
       if (kind === "choice" || kind === "text") {
         const question =
           typeof current.question === "string"
@@ -444,45 +489,24 @@ export function parseAskInputsResponsePayload(
   return responses.length > 0 ? { responses } : null;
 }
 
-export async function appendAskInputsResponseToLastAssistantMessage(
-  db: ReturnType<typeof createServerSupabase>,
-  chatId: string,
-  response: AskInputsResponseRequest,
-  authorUserId?: string,
-  messageTable = "chat_messages",
-) {
-  return appendAssistantEventsToLastAssistantMessage(
-    db,
-    chatId,
-    [
-      {
-        type: "ask_inputs_response" as const,
-        responses: response.responses,
-        ...(authorUserId ? { author_user_id: authorUserId } : {}),
-        recorded_at: new Date().toISOString(),
-      },
-    ],
-    undefined,
-    messageTable,
-  );
-}
+type StoredAssistantEventRow = {
+  id: string;
+  content: unknown;
+  citations?: unknown;
+  author_user_id?: string | null;
+};
 
-export async function appendAssistantEventsToLastAssistantMessage(
+async function loadLastAssistantMessage(
   db: ReturnType<typeof createServerSupabase>,
   chatId: string,
-  events: AssistantEvent[],
-  citations?: unknown[],
   messageTable = "chat_messages",
-) {
-  if (events.length === 0 && (!citations || citations.length === 0)) {
-    return true;
-  }
+): Promise<StoredAssistantEventRow | null> {
   // Skip streaming reservations (content = null, see routeStreaming) so
   // events are appended to the real last assistant message, not onto an
   // empty reservation left by a crashed or still-streaming request.
   const { data: rows, error: selectError } = await db
     .from(messageTable)
-    .select("id, content, citations")
+    .select("id, content, citations, author_user_id")
     .eq("chat_id", chatId)
     .eq("role", "assistant")
     .not("content", "is", null)
@@ -495,14 +519,18 @@ export async function appendAssistantEventsToLastAssistantMessage(
         selectError,
       );
     }
-    return false;
+    return null;
   }
+  return rows[0] as StoredAssistantEventRow;
+}
 
-  const row = rows[0] as {
-    id: string;
-    content: unknown;
-    citations?: unknown;
-  };
+async function appendAssistantEventsToMessage(
+  db: ReturnType<typeof createServerSupabase>,
+  row: StoredAssistantEventRow,
+  events: AssistantEvent[],
+  citations: unknown[] | undefined,
+  messageTable: string,
+): Promise<boolean> {
   const existing = Array.isArray(row.content) ? row.content : [];
   const next = [...existing, ...events];
   const existingCitations = Array.isArray(row.citations) ? row.citations : [];
@@ -525,6 +553,62 @@ export async function appendAssistantEventsToLastAssistantMessage(
     return false;
   }
   return true;
+}
+
+export type AppendAskInputsResponseResult =
+  | "appended"
+  | "forbidden"
+  | "failed";
+
+export async function appendAskInputsResponseToLastAssistantMessage(
+  db: ReturnType<typeof createServerSupabase>,
+  chatId: string,
+  response: AskInputsResponseRequest,
+  authorUserId: string,
+  messageTable = "chat_messages",
+): Promise<AppendAskInputsResponseResult> {
+  const row = await loadLastAssistantMessage(db, chatId, messageTable);
+  if (!row) return "failed";
+  if (row.author_user_id !== authorUserId) return "forbidden";
+
+  const appended = await appendAssistantEventsToMessage(
+    db,
+    row,
+    [
+      {
+        type: "ask_inputs_response" as const,
+        responses: response.responses,
+        author_user_id: authorUserId,
+        recorded_at: new Date().toISOString(),
+      },
+    ],
+    undefined,
+    messageTable,
+  );
+  return appended ? "appended" : "failed";
+}
+
+export async function appendAssistantEventsToLastAssistantMessage(
+  db: ReturnType<typeof createServerSupabase>,
+  chatId: string,
+  events: AssistantEvent[],
+  citations?: unknown[],
+  messageTable = "chat_messages",
+) {
+  if (events.length === 0 && (!citations || citations.length === 0)) {
+    return true;
+  }
+
+  const row = await loadLastAssistantMessage(db, chatId, messageTable);
+  if (!row) return false;
+
+  return appendAssistantEventsToMessage(
+    db,
+    row,
+    events,
+    citations,
+    messageTable,
+  );
 }
 
 export function appendCancelledAssistantEvent(events: AssistantEvent[]) {

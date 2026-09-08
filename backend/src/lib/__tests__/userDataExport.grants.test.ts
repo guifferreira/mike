@@ -1,9 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const downloadFileStrict = vi.fn();
-vi.mock("../storage", () => ({
-    downloadFileStrict: (...args: unknown[]) => downloadFileStrict(...args),
-}));
+import { describe, expect, it } from "vitest";
 
 import {
     buildProjectExportManifest,
@@ -69,14 +64,6 @@ function makeDb(tables: Record<string, Row[]>) {
     return { db: { from: (t: string) => query(t) } as any, reads };
 }
 
-function markdownBytes(value: string): ArrayBuffer {
-    return new TextEncoder().encode(value).buffer as ArrayBuffer;
-}
-
-beforeEach(() => {
-    downloadFileStrict.mockReset();
-});
-
 describe("account export: shared projects", () => {
     const tables = {
         projects: [
@@ -118,7 +105,7 @@ describe("memory exports", () => {
     const hash =
         "6adb5e098c8e2d456cd117d73fbdb23cdf1b50f3bebb5f96e2e02acde6d24c83";
 
-    it("includes the current app memory and retained Markdown revisions", async () => {
+    it("includes the app memory file's Markdown body", async () => {
         const { db } = makeDb({
             memory_files: [
                 {
@@ -127,33 +114,18 @@ describe("memory exports", () => {
                     user_id: "u1",
                     enabled: true,
                     epoch: 2,
-                    version: 1,
-                    current_version_id: "memory-version-1",
+                    revision: 1,
+                    content: markdown,
+                    content_sha256: hash,
+                    size_bytes: new TextEncoder().encode(markdown).byteLength,
+                    last_source: "manual",
+                    updated_by: "u1",
                     status: "idle",
                     created_at: "2026-09-05T00:00:00Z",
                     updated_at: "2026-09-05T00:01:00Z",
                 },
             ],
-            memory_file_versions: [
-                {
-                    id: "memory-version-1",
-                    memory_file_id: "memory-user",
-                    version: 1,
-                    storage_path:
-                        "memories/users/u1/versions/memory-version-1/memory.md",
-                    content_sha256: hash,
-                    size_bytes: new TextEncoder().encode(markdown).byteLength,
-                    source: "manual",
-                    updated_by: "u1",
-                    model: null,
-                    source_surface: null,
-                    source_chat_id: null,
-                    source_turn_id: null,
-                    created_at: "2026-09-05T00:01:00Z",
-                },
-            ],
         });
-        downloadFileStrict.mockResolvedValue(markdownBytes(markdown));
 
         const exported = await buildUserAccountExport(
             db,
@@ -163,18 +135,35 @@ describe("memory exports", () => {
 
         expect(exported.memory).toMatchObject({
             enabled: true,
-            version: 1,
-            current_version_id: "memory-version-1",
-            current: {
-                id: "memory-version-1",
-                content_sha256: hash,
-                markdown,
-            },
+            revision: 1,
+            markdown,
+            content_sha256: hash,
+            source: "manual",
+            updated_by: "u1",
         });
-        expect(exported.memory.versions).toHaveLength(1);
-        expect(downloadFileStrict).toHaveBeenCalledWith(
-            "memories/users/u1/versions/memory-version-1/memory.md",
-        );
+    });
+
+    it("refuses to export a body that does not match its digest", async () => {
+        const { db } = makeDb({
+            memory_files: [
+                {
+                    id: "memory-user",
+                    scope: "user",
+                    user_id: "u1",
+                    enabled: true,
+                    epoch: 0,
+                    revision: 1,
+                    content: "# Tampered",
+                    content_sha256: hash,
+                    size_bytes: 10,
+                    status: "idle",
+                },
+            ],
+        });
+
+        await expect(
+            buildUserAccountExport(db, "u1", "u1@example.com"),
+        ).rejects.toThrow(/checksum mismatch/i);
     });
 
     it("includes project memory in the signed project manifest", async () => {
@@ -195,41 +184,23 @@ describe("memory exports", () => {
                     project_id: "p1",
                     enabled: true,
                     epoch: 0,
-                    version: 1,
-                    current_version_id: "memory-version-1",
+                    revision: 1,
+                    content: markdown,
+                    content_sha256: hash,
+                    size_bytes: new TextEncoder().encode(markdown).byteLength,
+                    last_source: "curator",
+                    updated_by: "u1",
                     status: "idle",
                 },
             ],
-            memory_file_versions: [
-                {
-                    id: "memory-version-1",
-                    memory_file_id: "memory-project",
-                    version: 1,
-                    storage_path:
-                        "memories/projects/p1/versions/memory-version-1/memory.md",
-                    content_sha256: hash,
-                    size_bytes: new TextEncoder().encode(markdown).byteLength,
-                    source: "curator",
-                    updated_by: "u1",
-                    model: "gpt-5-mini",
-                    source_surface: "chat",
-                    source_chat_id: "chat-1",
-                    source_turn_id: "turn-1",
-                    created_at: "2026-09-05T00:01:00Z",
-                },
-            ],
         });
-        downloadFileStrict.mockResolvedValue(markdownBytes(markdown));
 
         const manifest = await buildProjectExportManifest(db, "p1");
 
         expect(manifest.memory).toMatchObject({
             enabled: true,
-            current: {
-                markdown,
-                source: "curator",
-                source_surface: "chat",
-            },
+            markdown,
+            source: "curator",
         });
         expect(manifest.digest.value).toMatch(/^[0-9a-f]{64}$/);
     });

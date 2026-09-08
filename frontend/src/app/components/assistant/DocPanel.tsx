@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Download, ExternalLink, Loader2 } from "lucide-react";
+import { Download, ExternalLink } from "lucide-react";
 import { API_BASE } from "@/app/lib/mikeApi";
 import { authenticatedFetch } from "@/app/lib/authEvents";
 import { PillButton } from "@/app/components/ui/pill-button";
@@ -495,12 +495,9 @@ function DownloadButton({
             size={compact ? "icon-xs" : "sm"}
             onClick={handleClick}
             disabled={spinning}
+            loading={spinning}
         >
-            {spinning ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-                <Download className="h-3.5 w-3.5" />
-            )}
+            <Download className="h-3.5 w-3.5" />
             <span className={compact ? "sr-only" : undefined}>Download</span>
         </PillButton>
     );

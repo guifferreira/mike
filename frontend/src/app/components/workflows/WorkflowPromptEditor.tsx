@@ -14,7 +14,7 @@ export function WorkflowPromptEditor({
     <MarkdownEditor
       {...props}
       ariaLabel={props.ariaLabel ?? "Workflow prompt"}
-      className={cn("workflow-prompt-editor-surface", className)}
+      className={className}
     />
   );
 }

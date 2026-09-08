@@ -69,15 +69,18 @@ describe("MarkdownEditor", () => {
         value="Prompt"
         onChange={vi.fn()}
         ariaLabel="Memory document"
-        className="workflow-prompt-editor-surface"
+        className="workflow-prompt-editor"
       />,
     );
 
     expect(container.firstElementChild).toHaveClass(
-      "workflow-prompt-editor-surface",
-      "markdown-editor-surface",
+      "workflow-prompt-editor",
       "rounded-2xl",
+      "liquid-glass-flat",
     );
+    // Not a table: a surface being typed into stays visually raised while
+    // table containers intentionally match the app background.
+    expect(container.firstElementChild).not.toHaveClass("table-surface");
 
     expect(
       screen.getByRole("toolbar", { name: "Markdown formatting" }),

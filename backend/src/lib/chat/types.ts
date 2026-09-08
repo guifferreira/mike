@@ -150,6 +150,15 @@ export type AskInputItem =
     }
   | {
       id: string;
+      kind: "multi_choice";
+      question: string;
+      options: AskInputOption[];
+      allow_other: boolean;
+      other_label: string;
+      response_prefix?: string;
+    }
+  | {
+      id: string;
       kind: "text";
       question: string;
       response_prefix?: string;
@@ -172,6 +181,13 @@ export type AskInputResponseItem =
       kind: "choice";
       question: string;
       answer?: string;
+      skipped?: boolean;
+    }
+  | {
+      id: string;
+      kind: "multi_choice";
+      question: string;
+      answers?: string[];
       skipped?: boolean;
     }
   | {

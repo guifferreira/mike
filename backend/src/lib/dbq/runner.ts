@@ -42,10 +42,7 @@ const STALE_SECONDS = 600;
 const DONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const FAILED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
-const RETRY_UNTIL_SUCCESS_KINDS = new Set([
-    "storage.cleanup",
-    "memory.candidate_cleanup",
-]);
+const RETRY_UNTIL_SUCCESS_KINDS = new Set(["storage.cleanup"]);
 
 /**
  * Exponential backoff for retries: 30s, 90s, 270s, ... capped at 30 min.
@@ -304,7 +301,6 @@ export async function runDbJobRetentionSweep(
         .delete()
         .eq("status", "failed")
         .neq("kind", "storage.cleanup")
-        .neq("kind", "memory.candidate_cleanup")
         .lt("finished_at", failedCutoff);
 }
 

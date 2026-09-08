@@ -1,44 +1,23 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { Db } from "../dbq/types";
-import {
-  assertStorageConfigured,
-  deleteFile,
-  downloadFileStrict,
-  uploadFile,
-} from "../storage";
 
 export const MEMORY_MAX_BYTES = 16 * 1024;
-export const MEMORY_VERSION_RETENTION = 50;
 
 export type MemoryScope = "user" | "project";
 export type MemoryStatus = "idle" | "scheduled" | "processing" | "failed";
-export type MemorySource = "manual" | "curator" | "restore";
+export type MemorySource = "manual" | "curator";
 export type MemorySurface = "chat" | "word" | "tabular";
 
 export type MemoryCurrent = {
   enabled: boolean;
   content: string;
-  version: number;
+  revision: number;
   hash: string | null;
   updated_at: string | null;
   updated_by: string | null;
   source: MemorySource | "wipe" | "settings" | null;
   status: MemoryStatus;
-};
-
-export type MemoryVersion = {
-  id: string;
-  version: number;
-  hash: string;
-  size_bytes: number;
-  created_at: string;
-  updated_by: string | null;
-  source: MemorySource;
-  change_summary: string | null;
-  model: string | null;
-  source_surface: MemorySurface | null;
-  source_chat_id: string | null;
-  source_turn_id: string | null;
+  status_updated_at: string;
 };
 
 export type MemoryFileRow = {
@@ -48,9 +27,12 @@ export type MemoryFileRow = {
   project_id: string | null;
   enabled: boolean;
   epoch: number | string;
-  version: number | string;
+  revision: number | string;
   learning_cutoff_at: string;
-  current_version_id: string | null;
+  content: string;
+  content_sha256: string | null;
+  size_bytes: number;
+  last_source_job_id: string | null;
   status: MemoryStatus;
   last_error_code: string | null;
   last_source: MemorySource | "wipe" | "settings" | null;
@@ -59,26 +41,8 @@ export type MemoryFileRow = {
   updated_at: string;
 };
 
-type MemoryVersionRow = {
-  id: string;
-  memory_file_id: string;
-  version: number | string;
-  storage_path: string;
-  size_bytes: number;
-  content_sha256: string;
-  source: MemorySource;
-  change_summary: string | null;
-  updated_by: string | null;
-  model: string | null;
-  source_surface: MemorySurface | null;
-  source_chat_id: string | null;
-  source_turn_id: string | null;
-  source_job_id: string | null;
-  created_at: string;
-};
-
 export class MemoryValidationError extends Error {}
-export class MemoryVersionConflictError extends Error {}
+export class MemoryRevisionConflictError extends Error {}
 export class MemoryDisabledError extends Error {}
 export class MemoryJobSupersededError extends Error {}
 export class MemoryEpochSupersededError extends Error {}
@@ -130,83 +94,10 @@ function memoryHash(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-function memoryStoragePath(file: MemoryFileRow, versionId: string): string {
-  if (file.scope === "user" && file.user_id) {
-    return `memories/users/${file.user_id}/versions/${versionId}/memory.md`;
-  }
-  if (file.scope === "project" && file.project_id) {
-    return `memories/projects/${file.project_id}/versions/${versionId}/memory.md`;
-  }
-  throw new Error("Invalid memory file scope");
-}
-
-function toArrayBuffer(content: string): ArrayBuffer {
-  const buffer = Buffer.from(content, "utf8");
-  return buffer.buffer.slice(
-    buffer.byteOffset,
-    buffer.byteOffset + buffer.byteLength,
-  ) as ArrayBuffer;
-}
-
-async function cleanupUploadCandidate(
-  db: Db,
-  candidateId: string,
-  storagePath: string,
-): Promise<void> {
-  const { data: claimed, error: claimError } = await db
-    .from("memory_object_candidates")
-    .update({ status: "cleaning" })
-    .eq("id", candidateId)
-    .in("status", ["uploading", "abandoned"])
-    .select("id")
-    .maybeSingle();
-  if (claimError || !claimed) return;
-  try {
-    // deleteFile intentionally no-ops in storage-optional deployments. A
-    // memory candidate is different: removing its final durable pointer after
-    // such a no-op would orphan private bytes if configuration disappeared
-    // between upload and compare-and-swap promotion.
-    assertStorageConfigured();
-    await deleteFile(storagePath);
-  } catch {
-    // begin_memory_file_upload registered this path and a delayed cleanup job
-    // atomically before upload. Leave both in place if inline deletion fails.
-    return;
-  }
-  // Once the object is gone, the durable candidate pointer is no longer
-  // needed. Its already-enqueued cleanup job will harmlessly no-op later.
-  await db.from("memory_object_candidates").delete().eq("id", candidateId);
-}
-
-async function versionRow(
-  db: Db,
-  id: string | null,
-): Promise<MemoryVersionRow | null> {
-  if (!id) return null;
-  const { data, error } = await db
-    .from("memory_file_versions")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle();
-  if (error) throw new Error("Failed to load memory version");
-  return (data as MemoryVersionRow | null) ?? null;
-}
-
-async function verifiedVersionContent(row: MemoryVersionRow): Promise<string> {
-  const bytes = await downloadFileStrict(row.storage_path);
-  if (!bytes) throw new Error("Memory object is missing");
-  const content = Buffer.from(bytes).toString("utf8");
-  if (memoryHash(content) !== row.content_sha256) {
-    throw new Error("Memory object checksum mismatch");
-  }
-  return content;
-}
-
 export async function ensureMemoryFile(
   db: Db,
   scope: MemoryScope,
   ownerId: string,
-  defaultEnabled = true,
 ): Promise<MemoryFileRow> {
   const ownerColumn = scope === "user" ? "user_id" : "project_id";
   const { data: existing, error: readError } = await db
@@ -224,7 +115,7 @@ export async function ensureMemoryFile(
       {
         scope,
         [ownerColumn]: ownerId,
-        enabled: defaultEnabled,
+        enabled: true,
       },
       { onConflict: ownerColumn, ignoreDuplicates: true },
     )
@@ -243,49 +134,39 @@ export async function ensureMemoryFile(
   return raced as MemoryFileRow;
 }
 
-export async function readMemoryContent(
-  db: Db,
-  file: MemoryFileRow,
-): Promise<{ content: string; version: MemoryVersionRow | null }> {
-  if (!file.current_version_id) return { content: "", version: null };
-  const version = await versionRow(db, file.current_version_id);
-  if (!version) throw new Error("Memory head version is missing");
-  const content = await verifiedVersionContent(version);
-  return { content, version };
-}
-
 export async function getMemoryCurrent(
   db: Db,
   scope: MemoryScope,
   ownerId: string,
-  defaultEnabled = true,
 ): Promise<{ current: MemoryCurrent; file: MemoryFileRow }> {
-  const file = await ensureMemoryFile(db, scope, ownerId, defaultEnabled);
-  const { content, version } = await readMemoryContent(db, file);
+  const file = await ensureMemoryFile(db, scope, ownerId);
+  return { file, current: memoryCurrentFromFile(file) };
+}
+
+function memoryCurrentFromFile(file: MemoryFileRow): MemoryCurrent {
+  const hasContent = !!file.content_sha256;
   return {
-    file,
-    current: {
-      enabled: file.enabled,
-      content,
-      // file.version is a monotonic CAS token. A destructive wipe removes all
-      // objects/history but advances this token so a draft loaded before the
-      // wipe cannot recreate erased content after disable/re-enable.
-      version: version ? numberValue(version.version) : numberValue(file.version),
-      hash: version?.content_sha256 ?? null,
-      updated_at: version?.created_at ?? file.updated_at ?? null,
-      updated_by: version?.updated_by ?? file.updated_by ?? null,
-      source: version?.source ?? file.last_source ?? null,
-      status: file.status,
-    },
+    enabled: file.enabled,
+    content: file.content ?? "",
+    // A monotonic change token, not a stored version: a destructive wipe
+    // empties the body but advances it, so a draft loaded before the wipe
+    // cannot recreate erased content after disable/re-enable.
+    revision: numberValue(file.revision),
+    hash: file.content_sha256,
+    updated_at: hasContent ? (file.updated_at ?? null) : null,
+    updated_by: hasContent ? (file.updated_by ?? null) : null,
+    source: hasContent ? (file.last_source ?? null) : null,
+    status: file.status,
+    status_updated_at: file.updated_at,
   };
 }
 
-function isVersionConflict(error: unknown): boolean {
+function isRevisionConflict(error: unknown): boolean {
   const message =
     error && typeof error === "object" && "message" in error
       ? String((error as { message?: unknown }).message ?? "")
       : String(error ?? "");
-  return message.includes("memory_version_conflict");
+  return message.includes("memory_revision_conflict");
 }
 
 function isEpochConflict(error: unknown): boolean {
@@ -293,7 +174,10 @@ function isEpochConflict(error: unknown): boolean {
     error && typeof error === "object" && "message" in error
       ? String((error as { message?: unknown }).message ?? "")
       : String(error ?? "");
-  return message.includes("memory_epoch_conflict");
+  return (
+    message.includes("memory_epoch_conflict") ||
+    message.includes("memory_scope_ineligible")
+  );
 }
 
 function isDisabled(error: unknown): boolean {
@@ -324,14 +208,11 @@ export async function writeMemoryFile(args: {
   db: Db;
   file: MemoryFileRow;
   content: string;
-  expectedVersion: number;
+  expectedRevision: number;
   source: MemorySource;
-  changeSummary?: string | null;
   updatedBy: string | null;
-  model?: string | null;
   sourceSurface?: MemorySurface | null;
   sourceChatId?: string | null;
-  sourceTurnId?: string | null;
   sourceJobId?: string | null;
   consolidationStateId?: string | null;
   consolidationGeneration?: number | null;
@@ -339,26 +220,12 @@ export async function writeMemoryFile(args: {
   sourceEpoch?: number | null;
   expectedEpoch?: number | null;
 }): Promise<{ current: MemoryCurrent; applied: boolean }> {
-  // Candidate cleanup is part of the persistence protocol, not optional
-  // background polish. With the durable worker explicitly disabled, refuse
-  // new uploads so a crash cannot create an object that will never be
-  // reclaimed.
-  if (process.env.DB_JOBS_ENABLED === "false") {
-    throw new Error("Memory persistence is unavailable");
-  }
   const content = normalizeMemoryMarkdown(args.content);
-  const changeSummary = args.changeSummary?.trim() || null;
-  if (changeSummary && changeSummary.length > 500) {
-    throw new MemoryValidationError(
-      "Memory change summary must be at most 500 characters",
-    );
-  }
-  const expectedVersion = numberValue(args.expectedVersion);
+  const expectedRevision = numberValue(args.expectedRevision);
   const fresh = await ensureMemoryFile(
     args.db,
     args.file.scope,
     (args.file.user_id ?? args.file.project_id) as string,
-    true,
   );
   if (!fresh.enabled) throw new MemoryDisabledError("Memory is disabled");
   const expectedEpoch =
@@ -368,75 +235,27 @@ export async function writeMemoryFile(args: {
   if (numberValue(fresh.epoch) !== expectedEpoch) {
     throw new MemoryEpochSupersededError("Memory scope was reset");
   }
-  if (numberValue(fresh.version) !== expectedVersion) {
-    throw new MemoryVersionConflictError("Memory version changed");
+  if (numberValue(fresh.revision) !== expectedRevision) {
+    throw new MemoryRevisionConflictError("Memory revision changed");
   }
-  const previous = await readMemoryContent(args.db, fresh);
   const hash = memoryHash(content);
-  if (previous.version?.content_sha256 === hash) {
-    return {
-      applied: false,
-      current: (await getMemoryCurrent(
-        args.db,
-        fresh.scope,
-        (fresh.user_id ?? fresh.project_id) as string,
-      )).current,
-    };
+  // An unchanged body is not a write: it would burn a revision and, for the
+  // curator, look like new learning in the audit trail.
+  if (fresh.content_sha256 === hash) {
+    return { applied: false, current: memoryCurrentFromFile(fresh) };
   }
 
-  const versionId = randomUUID();
-  const candidateId = randomUUID();
-  const storagePath = memoryStoragePath(fresh, versionId);
-  const { error: beginError } = await args.db.rpc("begin_memory_file_upload", {
+  const { data, error } = await args.db.rpc("write_memory_file", {
     p_memory_file_id: fresh.id,
-    p_expected_version: expectedVersion,
+    p_expected_revision: expectedRevision,
     p_expected_epoch: expectedEpoch,
-    p_candidate_id: candidateId,
-    p_storage_path: storagePath,
-  });
-  if (beginError) {
-    if (isEpochConflict(beginError)) {
-      if (args.expectedEpoch != null) {
-        throw new MemoryEpochSupersededError("Memory scope was reset");
-      }
-      throw new MemoryVersionConflictError("Memory version changed");
-    }
-    if (isVersionConflict(beginError)) {
-      throw new MemoryVersionConflictError("Memory version changed");
-    }
-    if (isDisabled(beginError)) {
-      throw new MemoryDisabledError("Memory is disabled");
-    }
-    throw new Error("Failed to prepare memory upload");
-  }
-  try {
-    await uploadFile(
-      storagePath,
-      toArrayBuffer(content),
-      "text/markdown; charset=utf-8",
-    );
-  } catch {
-    // The candidate row and its delayed cleanup job deliberately remain. A
-    // failed or ambiguously completed object PUT can therefore never become
-    // an untracked object.
-    throw new Error("Failed to upload memory");
-  }
-  const { data, error } = await args.db.rpc("advance_memory_file", {
-    p_memory_file_id: fresh.id,
-    p_expected_version: expectedVersion,
-    p_expected_epoch: expectedEpoch,
-    p_version_id: versionId,
-    p_candidate_id: candidateId,
-    p_storage_path: storagePath,
-    p_size_bytes: Buffer.byteLength(content, "utf8"),
+    p_content: content,
     p_content_sha256: hash,
+    p_size_bytes: Buffer.byteLength(content, "utf8"),
     p_source: args.source,
-    p_change_summary: changeSummary,
     p_updated_by: args.updatedBy,
-    p_model: args.model ?? null,
     p_source_surface: args.sourceSurface ?? null,
     p_source_chat_id: args.sourceChatId ?? null,
-    p_source_turn_id: args.sourceTurnId ?? null,
     p_source_job_id: args.sourceJobId ?? null,
     p_consolidation_state_id: args.consolidationStateId ?? null,
     p_consolidation_generation: args.consolidationGeneration ?? null,
@@ -444,7 +263,6 @@ export async function writeMemoryFile(args: {
     p_source_epoch: args.sourceEpoch ?? null,
   });
   if (error) {
-    await cleanupUploadCandidate(args.db, candidateId, storagePath);
     if (isConversationNotQuiet(error)) {
       throw new MemoryConversationNotQuietError(
         "Memory conversation is not quiet",
@@ -454,10 +272,10 @@ export async function writeMemoryFile(args: {
       if (args.expectedEpoch != null) {
         throw new MemoryEpochSupersededError("Memory scope was reset");
       }
-      throw new MemoryVersionConflictError("Memory version changed");
+      throw new MemoryRevisionConflictError("Memory revision changed");
     }
-    if (isVersionConflict(error)) {
-      throw new MemoryVersionConflictError("Memory version changed");
+    if (isRevisionConflict(error)) {
+      throw new MemoryRevisionConflictError("Memory revision changed");
     }
     if (isDisabled(error)) throw new MemoryDisabledError("Memory is disabled");
     if (isSuperseded(error)) {
@@ -467,88 +285,15 @@ export async function writeMemoryFile(args: {
   }
 
   const result = Array.isArray(data) ? data[0] : data;
-  if (result?.applied === false) {
-    await cleanupUploadCandidate(args.db, candidateId, storagePath);
-    return {
-      applied: false,
-      current: (await getMemoryCurrent(
-        args.db,
-        fresh.scope,
-        (fresh.user_id ?? fresh.project_id) as string,
-      )).current,
-    };
-  }
-
+  const applied = result?.applied !== false;
   return {
-    applied: true,
+    applied,
     current: (await getMemoryCurrent(
       args.db,
       fresh.scope,
       (fresh.user_id ?? fresh.project_id) as string,
     )).current,
   };
-}
-
-export async function listMemoryVersions(
-  db: Db,
-  fileId: string,
-): Promise<MemoryVersion[]> {
-  const { data, error } = await db
-    .from("memory_file_versions")
-    .select(
-      "id, version, content_sha256, size_bytes, created_at, updated_by, source, change_summary, model, source_surface, source_chat_id, source_turn_id",
-    )
-    .eq("memory_file_id", fileId)
-    .order("version", { ascending: false })
-    .limit(MEMORY_VERSION_RETENTION);
-  if (error) throw new Error("Failed to load memory versions");
-  return ((data ?? []) as MemoryVersionRow[]).map((row) => ({
-    id: row.id,
-    version: numberValue(row.version),
-    hash: row.content_sha256,
-    size_bytes: row.size_bytes,
-    created_at: row.created_at,
-    updated_by: row.updated_by,
-    source: row.source,
-    change_summary: row.change_summary,
-    model: row.model,
-    source_surface: row.source_surface,
-    source_chat_id: row.source_chat_id,
-    source_turn_id: row.source_turn_id,
-  }));
-}
-
-export async function restoreMemoryVersion(args: {
-  db: Db;
-  file: MemoryFileRow;
-  versionId: string;
-  expectedVersion: number;
-  updatedBy: string;
-}): Promise<MemoryCurrent> {
-  const { data, error } = await args.db
-    .from("memory_file_versions")
-    .select("*")
-    .eq("id", args.versionId)
-    .eq("memory_file_id", args.file.id)
-    .maybeSingle();
-  if (error) throw new Error("Failed to load memory version");
-  if (!data) throw new MemoryValidationError("Memory version not found");
-  const row = data as MemoryVersionRow;
-  const content = await verifiedVersionContent(row);
-  return (
-    await writeMemoryFile({
-      db: args.db,
-      file: args.file,
-      content,
-      expectedVersion: args.expectedVersion,
-      source: "restore",
-      changeSummary: `Restored memory version ${numberValue(row.version)}`,
-      updatedBy: args.updatedBy,
-      sourceSurface: row.source_surface,
-      sourceChatId: row.source_chat_id,
-      sourceTurnId: row.source_turn_id,
-    })
-  ).current;
 }
 
 export async function wipeMemoryFile(args: {
@@ -559,58 +304,33 @@ export async function wipeMemoryFile(args: {
   updatedBy: string | null;
   source?: "wipe" | "settings";
 }): Promise<MemoryCurrent> {
-  const queueDisabled = process.env.DB_JOBS_ENABLED === "false";
-  // Interactive wipe/disable cannot truthfully acknowledge cross-store
-  // erasure without the durable cleanup runner. Container/account deletion has
-  // a separate synchronous owner-prefix cleanup path.
-  if (queueDisabled) throw new Error("Memory persistence is unavailable");
   const { data, error } = await args.db.rpc("wipe_memory_file", {
     p_memory_file_id: args.file.id,
     p_enabled: args.enabled,
     p_updated_by: args.updatedBy,
     p_source: args.source ?? "wipe",
-    p_require_no_candidates: queueDisabled,
   });
   if (error) throw new Error("Failed to wipe memory");
   const result = Array.isArray(data) ? data[0] : data;
-  try {
-    const returnedPaths: string[] = Array.isArray(result?.storage_paths)
-      ? result.storage_paths.filter(
-          (path: unknown): path is string => typeof path === "string" && !!path,
-        )
-      : [];
-    await Promise.all(
-      [...new Set(returnedPaths)].map((path) => deleteFile(path)),
-    );
-  } catch {
-    // The RPC already committed durable storage.cleanup pointers. Ordinarily
-    // the queue retries them indefinitely; in the explicit disabled topology
-    // there is no worker, so do not acknowledge physical erasure on failure.
-    if (queueDisabled) {
-      throw new Error("Failed to erase memory objects");
-    }
-  }
   return {
     enabled:
       typeof result?.effective_enabled === "boolean"
         ? result.effective_enabled
         : (args.enabled ?? args.file.enabled),
     content: "",
-    version:
-      result?.new_version == null
-        ? numberValue(args.file.version) + 1
-        : numberValue(result.new_version),
+    revision:
+      result?.new_revision == null
+        ? numberValue(args.file.revision) + 1
+        : numberValue(result.new_revision),
     hash: null,
-    updated_at:
+    updated_at: null,
+    updated_by: null,
+    source: args.source ?? "wipe",
+    status: "idle",
+    status_updated_at:
       typeof result?.mutation_at === "string"
         ? result.mutation_at
         : new Date().toISOString(),
-    updated_by:
-      typeof result?.mutation_by === "string"
-        ? result.mutation_by
-        : args.updatedBy,
-    source: args.source ?? "wipe",
-    status: "idle",
   };
 }
 
@@ -637,29 +357,15 @@ export async function enableMemoryFile(
   return {
     enabled: true,
     content: "",
-    version: numberValue(result?.new_version ?? file.version),
+    revision: numberValue(result?.new_revision ?? file.revision),
     hash: null,
-    updated_at:
-      typeof result?.mutation_at === "string" ? result.mutation_at : file.updated_at,
-    updated_by:
-      typeof result?.mutation_by === "string" ? result.mutation_by : updatedBy,
+    updated_at: null,
+    updated_by: null,
     source: "settings",
     status: "idle",
+    status_updated_at:
+      typeof result?.mutation_at === "string"
+        ? result.mutation_at
+        : new Date().toISOString(),
   };
-}
-
-export async function memoryVersionContent(
-  db: Db,
-  fileId: string,
-  versionId: string,
-): Promise<string | null> {
-  const { data, error } = await db
-    .from("memory_file_versions")
-    .select("*")
-    .eq("id", versionId)
-    .eq("memory_file_id", fileId)
-    .maybeSingle();
-  if (error) throw new Error("Failed to load memory version");
-  if (!data) return null;
-  return verifiedVersionContent(data as MemoryVersionRow);
 }

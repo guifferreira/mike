@@ -17,9 +17,7 @@ import {
   Table2,
 } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
-import {
-  TABLE_SURFACE_CLASS,
-} from "@/app/components/ui/liquid-surface";
+import { EDITOR_SURFACE_CLASS } from "@/app/components/ui/liquid-surface";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -408,8 +406,8 @@ export function MarkdownEditor({
   return (
     <div
       className={cn(
-        "markdown-editor-surface flex h-full flex-col overflow-hidden",
-        TABLE_SURFACE_CLASS,
+        "flex h-full flex-col overflow-hidden",
+        EDITOR_SURFACE_CLASS,
         className,
       )}
     >

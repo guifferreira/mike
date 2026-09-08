@@ -49,6 +49,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     const [orgs, setOrgs] = useState<Org[]>([]);
     const [orgId, setOrgId] = useState<string>(PERSONAL_WORKSPACE);
     const [memoryEnabled, setMemoryEnabled] = useState(true);
+    const memoryEditedRef = useRef(false);
     const [selectedDocuments, setSelectedDocuments] = useState<Document[]>([]);
     const [pendingFiles, setPendingFiles] = useState<File[]>([]);
     const [loading, setLoading] = useState(false);
@@ -67,6 +68,7 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     const { profile } = useUserProfile();
     const preferredPractice =
         profile?.practiceAreas.find((area) => area.trim())?.trim() ?? "";
+    const projectMemoryDefault = profile?.projectMemoryDefault !== false;
     const ownEmail = user?.email?.trim().toLowerCase() ?? null;
     const formId = "new-project-modal-form";
 
@@ -95,6 +97,17 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
         if (!preferredPractice || practiceEditedRef.current) return;
         setPractice(preferredPractice);
     }, [open, preferredPractice]);
+
+    // The account's saved default seeds this project's memory setting, until
+    // the creator says otherwise for this one project.
+    useEffect(() => {
+        if (!open) {
+            memoryEditedRef.current = false;
+            return;
+        }
+        if (memoryEditedRef.current) return;
+        setMemoryEnabled(projectMemoryDefault);
+    }, [open, projectMemoryDefault]);
 
     if (!open) return null;
 
@@ -489,16 +502,14 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                             <FieldLabel as="p">Project memory</FieldLabel>
                             <ToggleSwitch
                                 checked={memoryEnabled}
-                                onCheckedChange={setMemoryEnabled}
+                                onCheckedChange={(enabled) => {
+                                    memoryEditedRef.current = true;
+                                    setMemoryEnabled(enabled);
+                                }}
                                 aria-label="Enable project memory"
                             >
                                 Let Mike remember shared project context
                             </ToggleSwitch>
-                            <p className="mt-1 text-xs text-gray-400">
-                                Mike can curate a shared memory.md for this
-                                project after conversations. Project members
-                                with access can read it.
-                            </p>
                         </div>
                     </div>
                 ) : step === "access" ? (

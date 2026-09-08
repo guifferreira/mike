@@ -10,8 +10,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MikeApiError,
   getProjectMemory,
-  listProjectMemoryVersions,
-  restoreProjectMemoryVersion,
   setProjectMemoryEnabled,
   updateProjectMemory,
   wipeProjectMemory,
@@ -41,10 +39,7 @@ vi.mock("@/app/components/ui/markdown-editor", () => ({
 
 vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/app/lib/mikeApi")>()),
-  downloadProjectMemoryMarkdown: vi.fn(),
   getProjectMemory: vi.fn(),
-  listProjectMemoryVersions: vi.fn(),
-  restoreProjectMemoryVersion: vi.fn(),
   setProjectMemoryEnabled: vi.fn(),
   updateProjectMemory: vi.fn(),
   wipeProjectMemory: vi.fn(),
@@ -53,27 +48,12 @@ vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
 const CURRENT = {
   enabled: true,
   content: "# Matter facts",
-  version: 2,
+  revision: 2,
   hash: "hash-2",
   updated_at: "2026-09-05T01:00:00Z",
   updated_by: "Alex",
   source: "curator" as const,
   status: "idle" as const,
-};
-
-const OLD_VERSION = {
-  id: "version-1",
-  version: 1,
-  hash: "hash-1",
-  size_bytes: 24,
-  created_at: "2026-09-04T01:00:00Z",
-  updated_by: "Alex",
-  source: "manual" as const,
-  model: null,
-  source_surface: null,
-  source_chat_id: null,
-  source_turn_id: null,
-  change_summary: null,
 };
 
 function renderModal(
@@ -99,16 +79,13 @@ function renderModal(
 describe("ProjectMemoryModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     vi.mocked(getProjectMemory).mockResolvedValue(CURRENT);
-    vi.mocked(listProjectMemoryVersions).mockResolvedValue([
-      { ...OLD_VERSION, id: "version-2", version: 2 },
-      OLD_VERSION,
-    ]);
     vi.mocked(updateProjectMemory).mockImplementation(
       async (_projectId, content) => ({
         ...CURRENT,
         content,
-        version: 3,
+        revision: 3,
         hash: "hash-3",
       }),
     );
@@ -137,37 +114,59 @@ describe("ProjectMemoryModal", () => {
     );
   });
 
-  it("lets viewers read memory without edit or restore controls", async () => {
+  it("lets viewers read memory without edit or delete controls", async () => {
     renderModal();
 
     const editor = await screen.findByRole("textbox", {
       name: "Project memory",
     });
-    expect(
-      screen.getByText(/Last updated .* · Version 2 · Automatic update/),
-    ).toBeVisible();
+    // A quiet, up-to-date file reports nothing: no timestamp, no source.
+    expect(screen.queryByText(/Last updated/)).toBeNull();
+    expect(screen.queryByText(/Automatic update/)).toBeNull();
+    // The editor takes whatever height is left rather than the body scrolling.
+    expect(editor.parentElement).toHaveClass("min-h-0", "flex-1");
     expect(editor).toHaveValue("# Matter facts");
     expect(editor).toHaveAttribute("readonly");
     expect(screen.queryByRole("button", { name: /Save/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Delete/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Restore/ })).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Download project memory.md" }),
-    ).toBeVisible();
-    expect(screen.getByRole("dialog", { name: "Memory" })).toHaveClass(
+      screen.queryByRole("button", { name: "Download project memory.md" }),
+    ).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Project Memory" })).toHaveClass(
       "max-w-2xl",
       "h-[min(600px,calc(100vh-2rem))]",
     );
-    expect(screen.getByRole("dialog", { name: "Memory" })).not.toHaveClass(
+    expect(screen.getByRole("dialog", { name: "Project Memory" })).not.toHaveClass(
       "max-w-4xl",
     );
+  });
+
+  it("shows a failed update only inside project memory and remembers dismissal", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getProjectMemory).mockResolvedValue({
+      ...CURRENT,
+      status: "failed",
+    });
+
+    const { unmount } = renderModal();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The latest automatic update failed",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Dismiss warning" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    unmount();
+    renderModal();
+    await screen.findByRole("textbox", { name: "Project memory" });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("autosaves an editor's draft against the loaded version", async () => {
     vi.mocked(updateProjectMemory).mockResolvedValue({
       ...CURRENT,
       content: "# Updated",
-      version: 3,
+      revision: 3,
     });
     const user = userEvent.setup();
     renderModal({ canEdit: true });
@@ -198,7 +197,7 @@ describe("ProjectMemoryModal", () => {
     vi.mocked(updateProjectMemory).mockResolvedValue({
       ...CURRENT,
       content: "# Normalized",
-      version: 3,
+      revision: 3,
       hash: "hash-3",
     });
     renderModal({ canEdit: true });
@@ -206,7 +205,7 @@ describe("ProjectMemoryModal", () => {
     const editor = await screen.findByRole("textbox", {
       name: "Project memory",
     });
-    await screen.findByText("Version 2 · Current");
+    await screen.findByRole("button", { name: "Close" });
 
     vi.useFakeTimers();
     try {
@@ -292,60 +291,11 @@ describe("ProjectMemoryModal", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("keeps current memory available when only history fails", async () => {
-    vi.mocked(listProjectMemoryVersions).mockRejectedValue(
-      new Error("history unavailable"),
-    );
-
-    renderModal();
-
-    expect(
-      await screen.findByRole("textbox", { name: "Project memory" }),
-    ).toHaveValue("# Matter facts");
-    expect(
-      await screen.findByText("Version history could not be refreshed."),
-    ).toBeVisible();
-    expect(screen.queryByText("Project memory could not be loaded")).toBeNull();
-  });
-
-  it("ignores an older history response after autosave refreshes it", async () => {
-    let resolveInitialHistory!: (value: (typeof OLD_VERSION)[]) => void;
-    vi.mocked(listProjectMemoryVersions)
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveInitialHistory = resolve;
-        }),
-      )
-      .mockResolvedValueOnce([{ ...OLD_VERSION, id: "version-3", version: 3 }]);
-    renderModal({ canEdit: true });
-
-    const editor = await screen.findByRole("textbox", {
-      name: "Project memory",
-    });
-    await waitFor(() =>
-      expect(listProjectMemoryVersions).toHaveBeenCalledTimes(1),
-    );
-    fireEvent.change(editor, {
-      target: { value: "# Matter facts updated" },
-    });
-    expect(
-      await screen.findByText("Version 3 · Current", {}, { timeout: 3000 }),
-    ).toBeVisible();
-
-    await act(async () => {
-      resolveInitialHistory([OLD_VERSION]);
-      await Promise.resolve();
-    });
-
-    expect(screen.getByText("Version 3 · Current")).toBeVisible();
-    expect(screen.queryByText("Version 1")).toBeNull();
-  });
-
   it("preserves an editor's stale draft across a version conflict", async () => {
     const latest = {
       ...CURRENT,
       content: "# Automatic update",
-      version: 3,
+      revision: 3,
       hash: "hash-3",
     };
     vi.mocked(getProjectMemory)
@@ -355,14 +305,14 @@ describe("ProjectMemoryModal", () => {
       .mockRejectedValueOnce(
         new MikeApiError({
           status: 409,
-          code: "memory_version_conflict",
+          code: "memory_revision_conflict",
           message: "Memory changed",
         }),
       )
       .mockResolvedValueOnce({
         ...CURRENT,
         content: "# My draft",
-        version: 4,
+        revision: 4,
         hash: "hash-4",
       });
     const user = userEvent.setup();
@@ -396,43 +346,12 @@ describe("ProjectMemoryModal", () => {
     );
   });
 
-  it("restores an older version against the current version", async () => {
-    vi.mocked(restoreProjectMemoryVersion).mockResolvedValue({
-      ...CURRENT,
-      content: "# Earlier",
-      version: 3,
-      hash: "hash-3",
-    });
-    const user = userEvent.setup();
-    renderModal({ canEdit: true, canManage: true });
-
-    await screen.findByRole("textbox", { name: "Project memory" });
-    await user.click(screen.getByRole("button", { name: "Restore" }));
-    expect(screen.getByText("Restore version 1?")).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Delete project memory" }),
-    ).toBeDisabled();
-
-    const restoreButtons = screen.getAllByRole("button", {
-      name: "Restore",
-    });
-    await user.click(restoreButtons.at(-1)!);
-
-    await waitFor(() =>
-      expect(restoreProjectMemoryVersion).toHaveBeenCalledWith(
-        "project-1",
-        "version-1",
-        2,
-      ),
-    );
-  });
-
   it("only enables disabled memory for a project owner", async () => {
     const off = {
       ...CURRENT,
       enabled: false,
       content: "",
-      version: 0,
+      revision: 0,
       hash: null,
       updated_at: null,
       updated_by: null,
@@ -462,7 +381,7 @@ describe("ProjectMemoryModal", () => {
       ...CURRENT,
       enabled: false,
       content: "",
-      version: 0,
+      revision: 0,
       hash: null,
       updated_at: null,
       updated_by: null,
@@ -474,12 +393,12 @@ describe("ProjectMemoryModal", () => {
     expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
   });
 
-  it("requires confirmation before an owner deletes memory history", async () => {
+  it("requires confirmation before an owner deletes memory", async () => {
     vi.mocked(wipeProjectMemory).mockResolvedValue({
       ...CURRENT,
       content: "",
       // Wipes clear the head while preserving a monotonic CAS token.
-      version: 3,
+      revision: 3,
       hash: null,
       updated_at: null,
       updated_by: null,
@@ -492,23 +411,15 @@ describe("ProjectMemoryModal", () => {
     );
     expect(wipeProjectMemory).not.toHaveBeenCalled();
     expect(screen.getByText("Delete project memory?")).toBeVisible();
-    for (const restore of screen.getAllByRole("button", { name: "Restore" })) {
-      expect(restore).toBeDisabled();
-    }
 
     await user.click(screen.getAllByRole("button", { name: /Delete/ }).at(-1)!);
     await waitFor(() =>
       expect(wipeProjectMemory).toHaveBeenCalledWith("project-1"),
     );
-    expect(
-      await screen.findByText("Project memory and version history deleted"),
-    ).toBeVisible();
+    expect(await screen.findByText("Project memory deleted")).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Delete project memory" }),
     ).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Download project memory.md" }),
-    ).toBeDisabled();
     expect(screen.queryByText("Version 3")).toBeNull();
   });
 
@@ -516,7 +427,7 @@ describe("ProjectMemoryModal", () => {
     vi.mocked(getProjectMemory).mockResolvedValue({
       ...CURRENT,
       content: "",
-      version: 0,
+      revision: 0,
       hash: null,
       updated_at: null,
       updated_by: null,
@@ -540,7 +451,7 @@ describe("ProjectMemoryModal", () => {
         .mockResolvedValueOnce({
           ...CURRENT,
           content: "# Curated matter facts",
-          version: 3,
+          revision: 3,
           hash: "hash-3",
           status: "idle",
         });
@@ -560,7 +471,7 @@ describe("ProjectMemoryModal", () => {
       expect(
         screen.getByRole("textbox", { name: "Project memory" }),
       ).toHaveValue("# Curated matter facts");
-      expect(listProjectMemoryVersions).toHaveBeenCalledTimes(2);
+      expect(getProjectMemory).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }

@@ -15,6 +15,8 @@ export type UserModelSettings = {
     title_model: string | null;
     /** Default for new reviews only; each review stores its own model. */
     tabular_model: string | null;
+    /** Explicit override for asynchronous memory curation. */
+    memory_curator_model: string | null;
     /** Cross-surface fallback used only when a chat has no usable model. */
     last_selected_chat_model: string | null;
     /** Cross-surface fallback used only when a chat has no saved level. */
@@ -40,7 +42,7 @@ export async function getUserModelSettings(
         client
             .from("user_profiles")
             .select(
-                "title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
+                "title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
             )
             .eq("user_id", userId)
             .single(),
@@ -48,13 +50,40 @@ export async function getUserModelSettings(
         getAllUserRouterModels(userId, client),
     ]);
     let data = profileResult.data;
+    let profileError = profileResult.error;
+
+    // Deploy-before-migrate tolerance for the memory curator preference. Keep
+    // every previously available setting while the new nullable column is
+    // still being rolled out.
+    if (
+        profileError?.code === "42703" &&
+        typeof profileError.message === "string" &&
+        profileError.message.includes("memory_curator_model")
+    ) {
+        const withoutMemoryCuratorModel = await client
+            .from("user_profiles")
+            .select(
+                "title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, legal_research_us, display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas",
+            )
+            .eq("user_id", userId)
+            .single();
+        if (!withoutMemoryCuratorModel.error) {
+            data = {
+                ...withoutMemoryCuratorModel.data,
+                memory_curator_model: null,
+            } as typeof data;
+            profileError = null;
+        } else {
+            profileError = withoutMemoryCuratorModel.error;
+        }
+    }
 
     // A database that predates the 20260821 onboarding migration rejects the
     // select above outright (unknown column), which would silently fall every
     // caller back to default models and re-enable US legal research for users
     // who turned it off. Retry with the pre-migration column set so saved
     // settings keep working; personalisation simply stays empty.
-    if (profileResult.error?.code === "42703") {
+    if (profileError?.code === "42703") {
         const withoutLastSelected = await client
             .from("user_profiles")
             .select(
@@ -65,6 +94,7 @@ export async function getUserModelSettings(
         if (!withoutLastSelected.error) {
             data = {
                 ...withoutLastSelected.data,
+                memory_curator_model: null,
                 last_selected_reasoning_level: null,
             } as typeof data;
         } else if (withoutLastSelected.error.code === "42703") {
@@ -79,6 +109,7 @@ export async function getUserModelSettings(
                 ? null
                 : ({
                       ...legacy.data,
+                      memory_curator_model: null,
                       last_selected_chat_model: null,
                       last_selected_reasoning_level: null,
                   } as typeof data);
@@ -94,6 +125,10 @@ export async function getUserModelSettings(
         ),
         tabular_model: normalizeOptionalModelPreference(
             data?.tabular_model,
+            routerModels,
+        ),
+        memory_curator_model: normalizeOptionalModelPreference(
+            data?.memory_curator_model,
             routerModels,
         ),
         last_selected_chat_model: normalizeOptionalModelPreference(

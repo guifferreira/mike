@@ -56,9 +56,9 @@ async function deleteWhereIn(
 
 /**
  * Fence and purge scoped memory before its owner row cascades away. The
- * database function durably records every object key in a storage.cleanup job
- * in the same transaction that removes version metadata, so account/project
- * deletion cannot orphan private Markdown objects by losing their pointers.
+ * database function empties the body under the file's row lock and advances
+ * its epoch in the same transaction, so a curator job that is already in
+ * flight cannot write learned content back onto a deleted owner.
  */
 async function wipeMemoryForOwners(
     db: Db,
@@ -84,7 +84,6 @@ async function wipeMemoryForOwners(
                 p_enabled: false,
                 p_updated_by: null,
                 p_source: "wipe",
-                p_require_no_candidates: false,
             });
             await throwIfError(result.error, `Failed to purge ${scope} memory`);
         }
@@ -609,58 +608,6 @@ async function deleteUserExportArtifacts(userId: string) {
 }
 
 /**
- * Final account-erasure sweep for private memory objects. Referenced versions
- * already have a durable cleanup job from wipe_memory_file; this prefix pass
- * also catches an uncommitted immutable candidate whose inline cleanup and
- * fallback enqueue were both interrupted. Nothing under a user's memory
- * prefix can belong to another account or a shared project.
- */
-async function deleteUserMemoryArtifacts(userId: string) {
-    let paths: string[];
-    try {
-        paths = await listFiles(`memories/users/${userId}/`);
-    } catch (err) {
-        throw new Error(
-            `Failed to list memory artifacts: ${
-                err instanceof Error ? err.message : "unknown error"
-            }`,
-        );
-    }
-    let failures = 0;
-    for (const path of paths) {
-        try {
-            await deleteFile(path);
-        } catch {
-            failures += 1;
-        }
-    }
-    if (failures > 0) {
-        throw new Error(
-            `Failed to delete ${failures}/${paths.length} memory artifacts`,
-        );
-    }
-}
-
-async function deleteProjectMemoryArtifacts(projectIds: string[]) {
-    for (const projectId of projectIds) {
-        const paths = await listFiles(`memories/projects/${projectId}/`);
-        let failures = 0;
-        for (const path of paths) {
-            try {
-                await deleteFile(path);
-            } catch {
-                failures += 1;
-            }
-        }
-        if (failures > 0) {
-            throw new Error(
-                `Failed to delete ${failures}/${paths.length} project memory artifacts`,
-            );
-        }
-    }
-}
-
-/**
  * Tear down a user's organization footprint on account deletion.
  *
  * An organization is a durable owner in its own right, not an extension of
@@ -878,11 +825,6 @@ export async function deleteProjectsByIds(db: Db, projectIds: string[]) {
     // Only now, with every row that pointed at them gone, do the bytes go.
 
     await enqueueStorageCleanup(db, storagePaths);
-    if (queueDisabled) {
-        // The owner no longer exists, so no writer can create a new object
-        // under this prefix while the synchronous escape-hatch sweep runs.
-        await deleteProjectMemoryArtifacts(ownedProjectIds);
-    }
 
     return ownedProjectIds.length;
 }
@@ -1026,14 +968,14 @@ export async function deleteUserAccountData(
         .eq("user_id", userId);
     await throwIfError(workflowsError, "Failed to delete workflows");
 
-    // `wipe_memory_file` writes the storage cleanup job before deleting the
-    // only version-path records. Organization project memory is deliberately
-    // excluded: it belongs to the surviving project, not its departing author.
+    // `wipe_memory_file` empties the body under the file's row lock and bumps
+    // its epoch, fencing any curator job still in flight. Organization project
+    // memory is deliberately excluded: it belongs to the surviving project,
+    // not its departing author.
     await wipeMemoryForOwners(db, "user", [userId]);
     // This helper atomically fences every remaining project/review chat before
     // deleting the project and destructively purges its scoped memory.
     await deleteProjectsByIds(db, personalProjectIds);
-    await deleteUserMemoryArtifacts(userId);
 
     // Every doomed row is gone; now the bytes they pointed at may follow.
     // Doing this earlier — before the row deletions — meant any failure in

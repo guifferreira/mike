@@ -12,7 +12,6 @@
 //   document.precompute_text — extract a legacy Office file's text once, so
 //                      read_document stops paying for LibreOffice per call
 //   memory.consolidate — curate scoped Markdown after chat inactivity
-//   memory.candidate_cleanup — reclaim an uncommitted memory object upload
 
 import {
     chatTurnAuditEvents,
@@ -69,6 +68,7 @@ import {
     handleMemoryConsolidation,
     markMemoryConsolidationFailed,
 } from "../memory/curator";
+import { buildMemoryArchive } from "../memory/archive";
 
 /** The export types a client may request; anything else is a 400 upstream. */
 export const EXPORT_TYPES = [
@@ -77,6 +77,7 @@ export const EXPORT_TYPES = [
     "tabular-reviews",
     "audit-csv",
     "documents-zip",
+    "memory-zip",
 ] as const;
 export type ExportType = (typeof EXPORT_TYPES)[number];
 
@@ -287,42 +288,6 @@ export async function handleStorageCleanup(db: Db, job: DbJob): Promise<void> {
     }
 }
 
-export async function handleMemoryCandidateCleanup(
-    db: Db,
-    job: DbJob,
-): Promise<void> {
-    const candidateId = job.payload.candidateId;
-    if (typeof candidateId !== "string" || !candidateId) return;
-    assertStorageConfigured();
-    // Atomic claim changes uploading/abandoned -> cleaning under the same row
-    // lock advance_memory_file uses. Once claimed, promotion cannot race the
-    // object delete and create a live head whose object has disappeared.
-    const { data, error } = await db.rpc("claim_memory_upload_candidate", {
-        p_candidate_id: candidateId,
-    });
-    if (error) throw new Error("Memory candidate cleanup could not claim state");
-    const claim = Array.isArray(data) ? data[0] : data;
-    if (!claim || claim.claim_status === "missing") return;
-    if (claim.claim_status !== "claimed" || !claim.candidate_storage_path) {
-        // A wipe can move cleanup_after after a worker has claimed its queue
-        // row. Retrying retains both the job and durable candidate pointer.
-        throw new Error("Memory candidate cleanup is not due");
-    }
-    try {
-        await deleteFile(String(claim.candidate_storage_path));
-    } catch {
-        throw new Error("Memory candidate object cleanup failed");
-    }
-    const { error: deleteError } = await db
-        .from("memory_object_candidates")
-        .delete()
-        .eq("id", candidateId)
-        .in("status", ["cleaning", "abandoned"]);
-    if (deleteError) {
-        throw new Error("Memory candidate cleanup could not finalize");
-    }
-}
-
 /** One finished artifact, ready to park in storage. */
 type ExportArtifact = {
     body: Buffer;
@@ -444,6 +409,18 @@ async function buildDocumentsZipExport(
     };
 }
 
+async function buildMemoryZipExport(
+    db: Db,
+    userId: string,
+    userEmail: string | null,
+): Promise<ExportArtifact> {
+    return {
+        body: await buildMemoryArchive(db, userId, userEmail),
+        filename: "mike-memory-export.zip",
+        contentType: "application/zip",
+    };
+}
+
 export async function handleExportBuild(
     db: Db,
     job: DbJob,
@@ -460,6 +437,8 @@ export async function handleExportBuild(
             ? await buildAuditCsvExport(db, job, userId, userEmail)
             : type === "documents-zip"
               ? await buildDocumentsZipExport(db, job, userId, userEmail)
+              : type === "memory-zip"
+                ? await buildMemoryZipExport(db, userId, userEmail)
               : await buildJsonExport(db, userId, userEmail, type);
 
     // Path is namespaced under the user (account erasure purges the prefix)
@@ -478,7 +457,14 @@ export async function handleExportBuild(
     // The completion audit row replaces the one the old sync route wrote.
     // The filtered exports have no such row: neither of their sync routes
     // recorded one, and inventing it here would change the history feed.
-    if (type !== "audit-csv" && type !== "documents-zip") {
+    if (type === "memory-zip") {
+        await recordAudit(db, {
+            userId,
+            userEmail,
+            action: "export.memory",
+            surface: "account",
+        });
+    } else if (type !== "audit-csv" && type !== "documents-zip") {
         await recordAudit(db, {
             userId,
             userEmail,
@@ -655,7 +641,6 @@ export const DB_JOB_HANDLERS: DbJobHandlers = {
     "audit.chat_turn": handleChatTurnAudit,
     "account.delete": handleAccountDelete,
     "storage.cleanup": handleStorageCleanup,
-    "memory.candidate_cleanup": handleMemoryCandidateCleanup,
     "export.build": handleExportBuild,
     "conversion.convert": handleConversionConvert,
     "extraction.extract": handleExtractionExtract,

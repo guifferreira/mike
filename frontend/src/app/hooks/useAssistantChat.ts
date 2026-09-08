@@ -939,7 +939,10 @@ export function useAssistantChat({
                   typeof row.id === "string" && row.id.trim()
                     ? row.id.trim()
                     : `input-${index + 1}`;
-                if (row.kind === "choice") {
+                if (
+                  row.kind === "choice" ||
+                  row.kind === "multi_choice"
+                ) {
                   const options = Array.isArray(row.options)
                     ? (row.options as unknown[]).flatMap((option) => {
                         if (!option || typeof option !== "object") return [];
@@ -960,11 +963,13 @@ export function useAssistantChat({
                     : [];
                   acc.push({
                     id,
-                    kind: "choice" as const,
+                    kind: row.kind,
                     question:
                       typeof row.question === "string"
                         ? row.question
-                        : "Please choose an option.",
+                        : row.kind === "multi_choice"
+                          ? "Please choose one or more options."
+                          : "Please choose an option.",
                     options,
                     allow_other: row.allow_other !== false,
                     other_label:

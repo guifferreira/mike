@@ -93,6 +93,25 @@ async function attachProjectMemoryEnabled<
   };
 }
 
+/**
+ * The creator's saved default for new projects' shared memory. A database
+ * that has not applied the preference migration, or a profile row that has
+ * not been created yet, falls back to on — the product default.
+ */
+async function projectMemoryDefaultFor(
+  db: ReturnType<typeof createServerSupabase>,
+  userId: string,
+): Promise<boolean> {
+  const { data, error } = await db
+    .from("user_profiles")
+    .select("project_memory_default")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data) return true;
+  return (data as { project_memory_default?: unknown })
+    .project_memory_default !== false;
+}
+
 function normalizeDocumentFilename(nextName: unknown, currentName: string) {
   if (typeof nextName !== "string") return null;
   const trimmed = nextName.trim().slice(0, 200);
@@ -456,7 +475,8 @@ projectsRouter.post("/", requireAuth, async (req, res) => {
     resolvedOrgId = org_id;
   }
 
-  const resolvedMemoryEnabled = memory_enabled ?? true;
+  const resolvedMemoryEnabled =
+    memory_enabled ?? (await projectMemoryDefaultFor(db, userId));
   // The explicit opt-in/out and the project row are one transaction. A crash
   // can never leave an opted-out project without its fail-closed setting.
   const { data: created, error } = await db.rpc("create_project_with_memory", {

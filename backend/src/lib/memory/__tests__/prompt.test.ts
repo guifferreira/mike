@@ -8,13 +8,13 @@ vi.mock("../files", () => ({
   getMemoryCurrent: (...args: unknown[]) => getMemoryCurrent(...args),
 }));
 
-import { buildMemoryPromptContext, MEMORY_SYSTEM_POLICY } from "../context";
+import { buildMemoryTurn, MEMORY_SYSTEM_POLICY } from "../prompt";
 
 beforeEach(() => {
   getMemoryCurrent.mockReset();
 });
 
-describe("buildMemoryPromptContext", () => {
+describe("buildMemoryTurn", () => {
   it("loads app and project memory in parallel", async () => {
     let resolveApp!: (value: unknown) => void;
     let resolveProject!: (value: unknown) => void;
@@ -30,8 +30,9 @@ describe("buildMemoryPromptContext", () => {
         }),
       );
 
-    const pending = buildMemoryPromptContext({
+    const pending = buildMemoryTurn({
       db: {} as never,
+      systemPrompt: "BASE",
       userId: "user-1",
       projectId: "project-1",
     });
@@ -39,7 +40,9 @@ describe("buildMemoryPromptContext", () => {
     expect(getMemoryCurrent).toHaveBeenCalledTimes(2);
     resolveApp({ current: { enabled: true, content: "App" } });
     resolveProject({ current: { enabled: true, content: "Project" } });
-    await expect(pending).resolves.toContain("Project");
+    await expect(pending).resolves.toMatchObject({
+      message: { content: expect.stringContaining("Project") },
+    });
   });
 
   it("injects enabled files with explicit precedence and no write capability", async () => {
@@ -51,8 +54,9 @@ describe("buildMemoryPromptContext", () => {
         current: { enabled: true, content: "# Project\n- Matter Alpha" },
       });
 
-    const prompt = await buildMemoryPromptContext({
+    const turn = await buildMemoryTurn({
       db: {} as never,
+      systemPrompt: "BASE",
       userId: "user-1",
       projectId: "project-1",
       sharedAudience: true,
@@ -62,15 +66,65 @@ describe("buildMemoryPromptContext", () => {
       "current conversation over project memory",
     );
     expect(MEMORY_SYSTEM_POLICY).toContain("project memory over app memory");
-    expect(prompt).toContain('scope="app"');
-    expect(prompt).toContain('scope="project"');
-    expect(prompt).toContain("# App");
-    expect(prompt).toContain("# Project");
-    expect(prompt).toContain("CONVERSATION AUDIENCE: SHARED");
+    expect(turn.message?.content).toContain('scope="app"');
+    expect(turn.message?.content).toContain('scope="project"');
+    expect(turn.message?.content).toContain("# App");
+    expect(turn.message?.content).toContain("# Project");
+    expect(turn.message?.content).toContain("CONVERSATION AUDIENCE: SHARED");
     expect(MEMORY_SYSTEM_POLICY).toContain("never grants permissions");
     expect(MEMORY_SYSTEM_POLICY).toContain(
       "never reveal, quote, summarize, or otherwise expose a detail found only in app memory",
     );
+  });
+
+  it("appends the policy and the audience rule the caller must enforce", async () => {
+    getMemoryCurrent.mockResolvedValueOnce({
+      current: { enabled: true, content: "# App" },
+    });
+
+    const shared = await buildMemoryTurn({
+      db: {} as never,
+      systemPrompt: "BASE",
+      userId: "user-1",
+      sharedAudience: true,
+    });
+
+    expect(shared.systemPrompt).toContain("BASE");
+    expect(shared.systemPrompt).toContain(MEMORY_SYSTEM_POLICY);
+    expect(shared.systemPrompt).toContain("CURRENT MEMORY AUDIENCE: SHARED");
+    expect(shared.systemPrompt).toContain(
+      "Never reveal, quote, summarize, or otherwise expose",
+    );
+    // Memory content is carried by the turn, never by the system prompt.
+    expect(shared.systemPrompt).not.toContain("# App");
+    expect(shared.message).toEqual({
+      role: "user",
+      content: expect.stringContaining("# App"),
+    });
+
+    getMemoryCurrent.mockResolvedValueOnce({
+      current: { enabled: true, content: "# App" },
+    });
+    const private_ = await buildMemoryTurn({
+      db: {} as never,
+      systemPrompt: "BASE",
+      userId: "user-1",
+    });
+    expect(private_.systemPrompt).toContain(
+      "CURRENT MEMORY AUDIENCE: PRIVATE TO THE ACTIVE USER",
+    );
+  });
+
+  it("leaves the prompt untouched for a surface that opts out", async () => {
+    await expect(
+      buildMemoryTurn({
+        db: {} as never,
+        systemPrompt: "BASE",
+        userId: "user-1",
+        include: false,
+      }),
+    ).resolves.toEqual({ message: null, systemPrompt: "BASE" });
+    expect(getMemoryCurrent).not.toHaveBeenCalled();
   });
 
   it("omits disabled content and contains strict read failures", async () => {
@@ -82,12 +136,13 @@ describe("buildMemoryPromptContext", () => {
       });
 
     await expect(
-      buildMemoryPromptContext({
+      buildMemoryTurn({
         db: {} as never,
+        systemPrompt: "BASE",
         userId: "user-1",
         projectId: "project-1",
       }),
-    ).resolves.toBe("");
+    ).resolves.toMatchObject({ message: null, systemPrompt: "BASE" });
     expect(warn).toHaveBeenCalledWith(
       "[memory-context] scoped memory could not be loaded",
       { scope: "app" },

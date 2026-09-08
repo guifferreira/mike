@@ -138,31 +138,18 @@
     --sidebar-ring: oklch(0.556 0 0);
 }
 
-/* The Appearance preference removes the resting table container surface.
-   Tabular Review remains a grid, so it retains its outer border; its existing
-   cell borders continue to define the rows and columns. */
+/* Tables use one solid page-background surface. Sticky layers consume the
+   inherited cell token so content scrolling beneath them never shows through. */
 .table-surface {
-    background-color: var(--liquid-glass-background-subtle);
-    border: 1px solid var(--liquid-glass-border-subtle);
-    box-shadow: var(--liquid-glass-shadow-subtle);
-}
-
-.transparent-tables .table-surface {
-    background-color: transparent;
-    border-color: transparent;
+    --table-cell-background: var(--app-background);
+    background-color: var(--table-cell-background);
+    border: 1px solid transparent;
     box-shadow: none;
 }
 
-.transparent-tables .table-surface .bg-app-surface {
-    background-color: transparent;
-}
-
-.table-surface .table-sticky-cell {
-    background-color: var(--app-surface);
-}
-
-.transparent-tables .table-surface .table-sticky-cell {
-    background-color: var(--app-background);
+.table-surface .table-sticky-cell,
+.table-surface .table-sticky-header {
+    background-color: var(--table-cell-background);
 }
 
 .table-surface .table-sticky-cell.liquid-glass-selected {
@@ -183,9 +170,7 @@
     background-color: var(--liquid-glass-hover-background);
 }
 
-.transparent-tables .table-surface.tabular-review-table-surface,
-.transparent-tables .table-surface.workflow-prompt-editor-surface,
-.transparent-tables .table-surface.memory-editor-surface {
+.table-surface.tabular-review-table-surface {
     border: 1px solid var(--table-grid-border);
 }
 

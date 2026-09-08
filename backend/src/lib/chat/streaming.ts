@@ -49,10 +49,7 @@ import {
   type TurnReadState,
 } from "./tools/documentOps";
 import { verifyCitations } from "./verifyCitations";
-import {
-  buildMemoryPromptContext,
-  MEMORY_SYSTEM_POLICY,
-} from "../memory/context";
+import { buildMemoryTurn } from "../memory/prompt";
 
 export type AssistantEvent =
   | { type: "reasoning"; text: string }
@@ -212,6 +209,23 @@ class AssistantStreamAskInputsPause extends Error {
   }
 }
 
+function isAskInputsPause(error: unknown): boolean {
+  if (error instanceof AssistantStreamAskInputsPause) return true;
+  if (!error || typeof error !== "object") return false;
+  const record = error as {
+    name?: unknown;
+    message?: unknown;
+    cause?: unknown;
+  };
+  if (
+    record.name === "AssistantStreamAskInputsPause" ||
+    record.message === "Waiting for user input."
+  ) {
+    return true;
+  }
+  return record.cause !== error && isAskInputsPause(record.cause);
+}
+
 export function isAbortError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const record = error as { name?: unknown; message?: unknown };
@@ -338,32 +352,23 @@ export async function runLLMStream(params: {
   const rawMsgs = apiMessages as { role: string; content: string | null }[];
   const baseSystemPrompt =
     rawMsgs[0]?.role === "system" ? (rawMsgs[0].content ?? "") : "";
-  const memoryPrompt = includeMemory
-    ? await buildMemoryPromptContext({
-        db,
-        userId,
-        projectId: memoryProjectId,
-        sharedAudience: memorySharedAudience,
-      })
-    : "";
-  const memoryAudiencePolicy = memorySharedAudience
-    ? "CURRENT MEMORY AUDIENCE: SHARED. Other people can see the persisted response. Never reveal, quote, summarize, or otherwise expose any detail found only in the active user's private app memory."
-    : "CURRENT MEMORY AUDIENCE: PRIVATE TO THE ACTIVE USER.";
-  const systemPrompt = memoryPrompt
-    ? `${baseSystemPrompt}\n\n${MEMORY_SYSTEM_POLICY}\n${memoryAudiencePolicy}`
-    : baseSystemPrompt;
+  const memory = await buildMemoryTurn({
+    db,
+    userId,
+    systemPrompt: baseSystemPrompt,
+    include: includeMemory,
+    projectId: memoryProjectId,
+    sharedAudience: memorySharedAudience,
+  });
+  const systemPrompt = memory.systemPrompt;
   const chatMessages: LlmMessage[] = rawMsgs
     .filter((m) => m.role !== "system")
     .map((m) => ({
       role: m.role === "assistant" ? "assistant" : "user",
       content: m.content ?? "",
     }));
-  if (memoryPrompt) {
-    // Markdown controlled by a user/project editor must never gain system-role
-    // authority. Put it before all real turns so newer conversation evidence
-    // naturally has higher precedence.
-    chatMessages.unshift({ role: "user", content: memoryPrompt });
-  }
+  // Before every real turn: see MemoryTurn for why it goes there.
+  if (memory.message) chatMessages.unshift(memory.message);
 
   const events: AssistantEvent[] = [];
   // One assistant turn produces at most one document_versions row per
@@ -735,7 +740,7 @@ export async function runLLMStream(params: {
       },
     });
   } catch (err) {
-    if (err instanceof AssistantStreamAskInputsPause) {
+    if (isAskInputsPause(err)) {
       // The ask_inputs event has already been emitted and persisted in `events`.
       // Stop this assistant turn here so the model does not add redundant
       // prose telling the user to answer the picker or attach documents.

@@ -10,7 +10,6 @@ import {
   authGlassCardUIClassName,
   authInputUIClassName,
 } from "@mike/auth-styles-ui";
-import { Loader2 } from "lucide-react";
 
 const WEB_APP_URL = (
   process.env.REACT_APP_WEB_APP_URL || "https://app.mikeoss.com"
@@ -145,13 +144,10 @@ export function LoginPage(): React.ReactElement {
                 size="normal"
                 className="w-full"
                 disabled={loading || googleLoading}
+                loading={googleLoading}
                 onClick={() => void handleGoogleLogin()}
               >
-                {googleLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <GoogleIconUI className="h-4 w-4" />
-                )}
+                <GoogleIconUI className="h-4 w-4" />
                 {googleLoading ? "Continuing…" : "Continue with Google"}
               </PillButton>
             </form>

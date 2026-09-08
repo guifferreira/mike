@@ -540,6 +540,47 @@ describe("POST /chat — streaming endpoint", () => {
         expect(res.text).toContain("[DONE]");
     });
 
+    it("persists an ask-input pause without reporting an empty response", async () => {
+        const askInputsEvent = {
+            type: "ask_inputs" as const,
+            items: [
+                {
+                    id: "choice-1",
+                    kind: "choice" as const,
+                    question: "Continue?",
+                    options: [{ value: "Yes" }],
+                    allow_other: false,
+                    other_label: "Other",
+                },
+            ],
+        };
+        runLLMStream.mockImplementationOnce(
+            async (params: { write: (chunk: string) => void }) => {
+                params.write(
+                    `data: ${JSON.stringify(askInputsEvent)}\n\n`,
+                );
+                return {
+                    fullText: "",
+                    events: [askInputsEvent],
+                    citations: [],
+                };
+            },
+        );
+
+        const res = await request(app)
+            .post("/chat")
+            .set("Authorization", "Bearer test")
+            .send(VALID_BODY);
+
+        expect(res.status).toBe(200);
+        expect(res.text).toContain('"type":"ask_inputs"');
+        expect(res.text).not.toContain("empty response");
+        expect(findAssistantUpdate()?.value).toMatchObject({
+            content: [askInputsEvent],
+        });
+        expect(scheduleMemoryConsolidation).not.toHaveBeenCalled();
+    });
+
     it("stores cloud Word chats only in the document-scoped Word tables", async () => {
         const chatLib = await import("../../lib/chat");
         const res = await request(app)
@@ -974,6 +1015,7 @@ describe("POST /chat — streaming endpoint", () => {
         role: "assistant",
         content: [{ type: "ask_inputs", items: [] }],
         citations: null,
+        author_user_id: "u1",
         created_at: "2026-01-01T00:00:00Z",
       },
     ];
@@ -1024,6 +1066,7 @@ describe("POST /chat — streaming endpoint", () => {
                 role: "assistant",
                 content: [{ type: "ask_inputs", items: [] }],
                 citations: null,
+                author_user_id: "u1",
                 created_at: "2026-01-01T00:00:00Z",
             },
             {
@@ -1032,6 +1075,7 @@ describe("POST /chat — streaming endpoint", () => {
                 role: "assistant",
                 content: null,
                 citations: null,
+                author_user_id: "u1",
                 created_at: "2026-01-01T00:05:00Z",
             },
         ];

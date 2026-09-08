@@ -7,7 +7,7 @@ import type { MemorySurface } from "./files";
 
 export const MEMORY_INACTIVITY_MS = envInt(
   "MEMORY_INACTIVITY_SECONDS",
-  300,
+  10,
 ) * 1_000;
 const MEMORY_INACTIVITY_SECONDS = Math.max(
   1,

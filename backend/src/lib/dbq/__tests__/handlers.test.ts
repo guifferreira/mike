@@ -38,6 +38,13 @@ vi.mock("../../auditExport", async (importOriginal) => {
     };
 });
 
+const buildMemoryArchive = vi.fn(async (..._a: unknown[]) =>
+    Buffer.from("memory-zip"),
+);
+vi.mock("../../memory/archive", () => ({
+    buildMemoryArchive: (...a: unknown[]) => buildMemoryArchive(...a),
+}));
+
 const ACTIVE_VERSION = {
     id: "v1",
     storage_path: "docs/d1/v1.docx",
@@ -83,7 +90,6 @@ vi.mock("../../storage", () => ({
 import {
     handleChatTurnAudit,
     handleAccountDelete,
-    handleMemoryCandidateCleanup,
     handleStorageCleanup,
     handleExportBuild,
     MAX_ZIP_EXPORT_DOCUMENTS,
@@ -178,6 +184,7 @@ beforeEach(() => {
     buildAuditCsv
         .mockReset()
         .mockResolvedValue("created_at,user\n2026-01-01,a@b.test");
+    buildMemoryArchive.mockReset().mockResolvedValue(Buffer.from("memory-zip"));
     ensureDocAccess.mockReset().mockResolvedValue({ ok: true });
     loadActiveVersion.mockReset().mockResolvedValue(ACTIVE_VERSION);
 });
@@ -371,65 +378,6 @@ describe("handleStorageCleanup", () => {
     });
 });
 
-describe("handleMemoryCandidateCleanup", () => {
-    it("atomically claims before deleting an unpromoted object", async () => {
-        const trace: string[] = [];
-        const db = {
-            rpc: vi.fn(async () => {
-                trace.push("claim");
-                return {
-                    data: [
-                        {
-                            claim_status: "claimed",
-                            candidate_storage_path: "memories/candidate.md",
-                        },
-                    ],
-                    error: null,
-                };
-            }),
-            from: vi.fn(() => ({
-                delete: () => ({
-                    eq: () => ({
-                        in: async () => {
-                            trace.push("row-delete");
-                            return { error: null };
-                        },
-                    }),
-                }),
-            })),
-        };
-        deleteFile.mockImplementationOnce(async () => {
-            trace.push("object-delete");
-        });
-
-        await handleMemoryCandidateCleanup(
-            db as never,
-            JOB("memory.candidate_cleanup", { candidateId: "candidate-1" }),
-        );
-
-        expect(db.rpc).toHaveBeenCalledWith("claim_memory_upload_candidate", {
-            p_candidate_id: "candidate-1",
-        });
-        expect(trace).toEqual(["claim", "object-delete", "row-delete"]);
-    });
-
-    it("does not touch storage when a delayed candidate is not due", async () => {
-        const db = {
-            rpc: vi.fn(async () => ({
-                data: [{ claim_status: "not_due", candidate_storage_path: null }],
-                error: null,
-            })),
-        };
-        await expect(
-            handleMemoryCandidateCleanup(
-                db as never,
-                JOB("memory.candidate_cleanup", { candidateId: "candidate-1" }),
-            ),
-        ).rejects.toThrow("Memory candidate cleanup is not due");
-        expect(deleteFile).not.toHaveBeenCalled();
-    });
-});
-
 describe("handleExportBuild", () => {
     it("builds, uploads under the user's exports/ prefix, and returns the signed link", async () => {
         const out = await handleExportBuild(
@@ -456,6 +404,34 @@ describe("handleExportBuild", () => {
                 JOB("export.build", { userId: "u1", type: "everything" }),
             ),
         ).rejects.toThrow(/malformed payload/);
+    });
+
+    it("builds and audits the memory ZIP", async () => {
+        const db = makeDb();
+        const out = await handleExportBuild(
+            db as never,
+            JOB("export.build", {
+                userId: "u1",
+                userEmail: "u@x.test",
+                type: "memory-zip",
+            }),
+        );
+
+        expect(buildMemoryArchive).toHaveBeenCalledWith(
+            db,
+            "u1",
+            "u@x.test",
+        );
+        const [path, , contentType] = uploadFile.mock.calls[0];
+        expect(path).toBe(
+            "exports/u1/job-1-mike-memory-export.zip",
+        );
+        expect(contentType).toBe("application/zip");
+        expect(out.filename).toBe("mike-memory-export.zip");
+        expect(recordAudit).toHaveBeenCalledWith(
+            db,
+            expect.objectContaining({ action: "export.memory" }),
+        );
     });
 
     it("builds the history CSV from the job's stored filters", async () => {

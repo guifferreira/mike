@@ -282,18 +282,13 @@ export function ProjectDetailsModal({
                     >
                         Let Mike remember shared project context
                     </ToggleSwitch>
-                    <p className="mt-1 text-xs text-gray-400">
-                        {memoryEnabled
-                            ? "Turning this off permanently deletes memory.md and its version history."
-                            : "When enabled, Mike can curate a shared project memory.md after conversations."}
-                    </p>
                 </div>
             </div>
 
             <ConfirmPopup
                 open={disableMemoryConfirmOpen}
                 title="Turn off project memory?"
-                message="This permanently deletes the project's memory.md and its complete version history. This cannot be undone."
+                message="This permanently deletes the project's memory.md. This cannot be undone."
                 confirmLabel="Disable"
                 confirmVariant="danger"
                 confirmStatus={memorySaving ? "loading" : "idle"}

@@ -121,7 +121,7 @@ describe("NewProjectModal sharing", () => {
     vi.mocked(setProjectMemoryEnabled).mockResolvedValue({
       enabled: false,
       content: "",
-      version: 1,
+      revision: 1,
       hash: null,
       updated_at: null,
       updated_by: null,
@@ -134,12 +134,17 @@ describe("NewProjectModal sharing", () => {
             email,
             display_name: "Existing user",
         }));
-        useUserProfile.mockReturnValue({ profile: { practiceAreas: [] } });
+        useUserProfile.mockReturnValue({
+            profile: { practiceAreas: [], projectMemoryDefault: true },
+        });
     });
 
     it("starts with the user's first preset practice area", async () => {
         useUserProfile.mockReturnValue({
-            profile: { practiceAreas: ["Corporate and M&A", "Litigation"] },
+            profile: {
+                practiceAreas: ["Corporate and M&A", "Litigation"],
+                projectMemoryDefault: true,
+            },
         });
         renderModal();
 
@@ -155,6 +160,54 @@ describe("NewProjectModal sharing", () => {
     expect(
       screen.getByRole("switch", { name: "Enable project memory" }),
     ).toBeChecked();
+    await user.type(screen.getByPlaceholderText("Add project name"), "P");
+    await submit(user);
+
+    await waitFor(() =>
+      expect(createProject).toHaveBeenCalledWith(
+        "P",
+        undefined,
+        undefined,
+        undefined,
+        true,
+      ),
+    );
+  });
+
+  it("follows the account's off default for new projects", async () => {
+    useUserProfile.mockReturnValue({
+      profile: { practiceAreas: [], projectMemoryDefault: false },
+    });
+    const user = userEvent.setup({ delay: null });
+    renderModal();
+
+    expect(
+      screen.getByRole("switch", { name: "Enable project memory" }),
+    ).not.toBeChecked();
+    await user.type(screen.getByPlaceholderText("Add project name"), "P");
+    await submit(user);
+
+    await waitFor(() =>
+      expect(createProject).toHaveBeenCalledWith(
+        "P",
+        undefined,
+        undefined,
+        undefined,
+        false,
+      ),
+    );
+  });
+
+  it("lets the creator override the account default for one project", async () => {
+    useUserProfile.mockReturnValue({
+      profile: { practiceAreas: [], projectMemoryDefault: false },
+    });
+    const user = userEvent.setup({ delay: null });
+    renderModal();
+
+    await user.click(
+      screen.getByRole("switch", { name: "Enable project memory" }),
+    );
     await user.type(screen.getByPlaceholderText("Add project name"), "P");
     await submit(user);
 

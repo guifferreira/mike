@@ -45,6 +45,7 @@ create table if not exists public.user_profiles (
   credits_reset_date timestamptz not null default (now() + interval '30 days'),
   title_model text,
   tabular_model text,
+  memory_curator_model text,
   last_selected_chat_model text,
   last_selected_reasoning_level text check (last_selected_reasoning_level in ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
   quote_model text,
@@ -52,7 +53,9 @@ create table if not exists public.user_profiles (
   legal_research_us boolean not null default true,
   quick_actions_visible boolean not null default true,
   dark_mode boolean not null default false,
-  transparent_tables boolean not null default true,
+  -- Whether projects this user creates start with shared memory enabled. Any
+  -- project owner can still turn a given project's memory on or off later.
+  project_memory_default boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -1922,6 +1925,7 @@ create table if not exists public.chat_messages (
   author_user_id uuid references auth.users(id) on delete set null,
   memory_input_message_id uuid,
   memory_eligible_at timestamptz,
+  memory_app_eligible_at timestamptz,
   role text not null,
   content jsonb,
   files jsonb,
@@ -1979,6 +1983,7 @@ create table if not exists public.word_chat_messages (
   author_user_id uuid references auth.users(id) on delete set null,
   memory_input_message_id uuid,
   memory_eligible_at timestamptz,
+  memory_app_eligible_at timestamptz,
   role text not null check (role in ('user', 'assistant')),
   content jsonb,
   files jsonb,
@@ -2625,6 +2630,7 @@ create table if not exists public.tabular_review_chat_messages (
   author_user_id uuid references auth.users(id) on delete set null,
   memory_input_message_id uuid,
   memory_eligible_at timestamptz,
+  memory_app_eligible_at timestamptz,
   role text not null,
   content jsonb,
   annotations jsonb,
@@ -4416,9 +4422,9 @@ alter table public.db_jobs enable row level security;
 -- ---------------------------------------------------------------------------
 -- Scoped memory files
 -- ---------------------------------------------------------------------------
--- The bytes are immutable private Markdown objects in R2-compatible storage.
--- These rows hold the current pointer, version/audit metadata, destructive
--- enablement epoch, and durable inactivity-curator state.
+-- One row per memory file holds the Markdown body itself. Saves from the
+-- editor and the curator are direct compare-and-swap updates of that row;
+-- there is no version history and no separate object to keep in step.
 create table if not exists public.memory_files (
   id uuid primary key default gen_random_uuid(),
   scope text not null check (scope in ('user', 'project')),
@@ -4426,14 +4432,23 @@ create table if not exists public.memory_files (
   project_id uuid references public.projects(id) on delete cascade,
   enabled boolean not null default true,
   epoch bigint not null default 0 check (epoch >= 0),
-  version bigint not null default 0 check (version >= 0),
+  -- Monotonic change token for compare-and-swap. Nothing is retained per
+  -- value: it exists only to answer "has this row moved since you read it?".
+  revision bigint not null default 0 check (revision >= 0),
   learning_cutoff_at timestamptz not null default now(),
-  current_version_id uuid,
+  content text not null default '',
+  content_sha256 text check (
+    content_sha256 is null or content_sha256 ~ '^[0-9a-f]{64}$'
+  ),
+  size_bytes integer not null default 0
+    check (size_bytes >= 0 and size_bytes <= 16384),
+  -- The curator job that last applied a write, so a retried job is a no-op.
+  last_source_job_id uuid,
   status text not null default 'idle'
     check (status in ('idle', 'scheduled', 'processing', 'failed')),
   last_error_code text,
   last_source text check (
-    last_source is null or last_source in ('manual', 'curator', 'restore', 'wipe', 'settings')
+    last_source is null or last_source in ('manual', 'curator', 'wipe', 'settings')
   ),
   updated_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default now(),
@@ -4447,64 +4462,6 @@ create unique index if not exists memory_files_user_unique
   on public.memory_files(user_id);
 create unique index if not exists memory_files_project_unique
   on public.memory_files(project_id);
-create index if not exists memory_files_current_version_idx
-  on public.memory_files(current_version_id) where current_version_id is not null;
-
-create table if not exists public.memory_file_versions (
-  id uuid primary key,
-  memory_file_id uuid not null references public.memory_files(id) on delete cascade,
-  version bigint not null check (version > 0),
-  storage_path text not null unique,
-  size_bytes integer not null check (size_bytes >= 0 and size_bytes <= 16384),
-  content_sha256 text not null check (content_sha256 ~ '^[0-9a-f]{64}$'),
-  source text not null check (source in ('manual', 'curator', 'restore')),
-  change_summary text check (
-    change_summary is null or char_length(change_summary) <= 500
-  ),
-  updated_by uuid references auth.users(id) on delete set null,
-  model text,
-  source_surface text check (
-    source_surface is null or source_surface in ('chat', 'word', 'tabular')
-  ),
-  source_chat_id uuid,
-  source_turn_id uuid,
-  source_job_id uuid,
-  created_at timestamptz not null default now(),
-  unique(memory_file_id, version),
-  unique(memory_file_id, source_job_id)
-);
-create index if not exists memory_file_versions_file_created_idx
-  on public.memory_file_versions(memory_file_id, created_at desc);
-
-alter table public.memory_file_versions
-  add column if not exists change_summary text;
-
--- A durable pointer exists before every object upload. Promotion removes it
--- only after the immutable version row is committed; crashes leave a delayed
--- cleanup job with enough information to reclaim the staging object.
-create table if not exists public.memory_object_candidates (
-  id uuid primary key,
-  memory_file_id uuid references public.memory_files(id) on delete set null,
-  scope text not null check (scope in ('user', 'project')),
-  owner_id uuid not null,
-  epoch bigint not null check (epoch >= 0),
-  storage_path text not null unique,
-  status text not null default 'uploading'
-    check (status in ('uploading', 'abandoned', 'cleaning')),
-  cleanup_job_id uuid not null unique,
-  cleanup_after timestamptz not null,
-  created_at timestamptz not null default now()
-);
-create index if not exists memory_object_candidates_file_idx
-  on public.memory_object_candidates(memory_file_id);
-create index if not exists memory_object_candidates_cleanup_idx
-  on public.memory_object_candidates(cleanup_after);
-alter table public.memory_files
-  add constraint memory_files_current_version_id_fkey
-  foreign key (current_version_id)
-  references public.memory_file_versions(id)
-  on delete set null
-  deferrable initially deferred;
 
 create table if not exists public.memory_consolidation_states (
   id uuid primary key default gen_random_uuid(),
@@ -4609,14 +4566,12 @@ create table if not exists public.memory_consolidation_results (
   outcome text not null check (
     outcome in ('updated', 'no_change', 'skipped', 'superseded')
   ),
-  version bigint,
+  revision bigint,
   created_at timestamptz not null default now(),
   primary key(job_id, memory_file_id)
 );
 
 alter table public.memory_files enable row level security;
-alter table public.memory_file_versions enable row level security;
-alter table public.memory_object_candidates enable row level security;
 alter table public.memory_consolidation_states enable row level security;
 alter table public.memory_conversation_activity enable row level security;
 alter table public.memory_conversation_turn_leases enable row level security;
@@ -5009,52 +4964,6 @@ create index if not exists db_jobs_memory_conversation_pending_idx
   on public.db_jobs((payload->>'surface'), (payload->>'conversationId'))
   where kind = 'memory.consolidate' and status = 'pending';
 
-create or replace function public.fence_memory_file_delete()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  committed_paths text[];
-  candidate_cleanup_time timestamptz := now() + interval '1 hour';
-begin
-  select coalesce(array_agg(distinct version.storage_path), '{}'::text[])
-  into committed_paths
-  from public.memory_file_versions version
-  where version.memory_file_id = old.id;
-  if cardinality(committed_paths) > 0 then
-    insert into public.db_jobs(kind, payload, max_attempts, dedupe_key)
-    values (
-      'storage.cleanup',
-      jsonb_build_object(
-        'keys', to_jsonb(committed_paths), 'prefixes', '[]'::jsonb
-      ),
-      2147483647,
-      'memory-file-delete:' || old.id::text || ':' || old.epoch::text
-    ) on conflict do nothing;
-  end if;
-  with abandoned as (
-    update public.memory_object_candidates
-    set status = 'abandoned',
-        cleanup_after = greatest(cleanup_after, candidate_cleanup_time)
-    where memory_file_id = old.id
-      and status in ('uploading', 'abandoned')
-    returning cleanup_job_id
-  )
-  update public.db_jobs
-  set run_at = greatest(run_at, candidate_cleanup_time)
-  where id in (select cleanup_job_id from abandoned)
-    and status = 'pending';
-  return old;
-end;
-$$;
-
-drop trigger if exists memory_files_delete_fence on public.memory_files;
-create trigger memory_files_delete_fence
-before delete on public.memory_files
-for each row execute function public.fence_memory_file_delete();
-
 -- Atomic batch claim with built-in stale-running recovery (crash resume).
 -- Storage cleanup kinds carry the only durable pointer to objects whose
 -- metadata has been wiped. They are retried until successful, including after
@@ -5077,19 +4986,19 @@ as $$
      where status = 'running'
        and claimed_at < now() - make_interval(secs => p_stale_seconds)
        and attempts >= max_attempts
-       and kind not in ('storage.cleanup', 'memory.candidate_cleanup')
+       and kind <> 'storage.cleanup'
     returning id
   ), candidates as (
     select id
       from public.db_jobs
      where (status = 'pending' and run_at <= now())
         or (status = 'failed'
-            and kind in ('storage.cleanup', 'memory.candidate_cleanup'))
+            and kind = 'storage.cleanup')
         or (status = 'running'
             and claimed_at < now() - make_interval(secs => p_stale_seconds)
             and (
               attempts < max_attempts
-              or kind in ('storage.cleanup', 'memory.candidate_cleanup')
+              or kind = 'storage.cleanup'
             ))
      order by run_at
      limit p_limit
@@ -5100,18 +5009,18 @@ as $$
          claimed_at = now(),
          finished_at = null,
          attempts = case
-           when j.kind in ('storage.cleanup', 'memory.candidate_cleanup')
+           when j.kind = 'storage.cleanup'
              then least(j.attempts::bigint + 1, 2147483647)::integer
            else j.attempts + 1
          end,
          max_attempts = case
-           when j.kind in ('storage.cleanup', 'memory.candidate_cleanup')
+           when j.kind = 'storage.cleanup'
              then 2147483647
            else j.max_attempts
          end,
          dedupe_key = case
            when j.status = 'failed'
-             and j.kind in ('storage.cleanup', 'memory.candidate_cleanup')
+             and j.kind = 'storage.cleanup'
              then null
            else j.dedupe_key
          end
@@ -5142,30 +5051,30 @@ as $$
          claimed_at = now(),
          finished_at = null,
          attempts = case
-           when j.kind in ('storage.cleanup', 'memory.candidate_cleanup')
+           when j.kind = 'storage.cleanup'
              then least(j.attempts::bigint + 1, 2147483647)::integer
            else j.attempts + 1
          end,
          max_attempts = case
-           when j.kind in ('storage.cleanup', 'memory.candidate_cleanup')
+           when j.kind = 'storage.cleanup'
              then 2147483647
            else j.max_attempts
          end,
          dedupe_key = case
            when j.status = 'failed'
-             and j.kind in ('storage.cleanup', 'memory.candidate_cleanup')
+             and j.kind = 'storage.cleanup'
              then null
            else j.dedupe_key
          end
    where j.id = p_id
      and ((j.status = 'pending' and j.run_at <= now())
        or (j.status = 'failed'
-           and j.kind in ('storage.cleanup', 'memory.candidate_cleanup'))
+           and j.kind = 'storage.cleanup')
        or (j.status = 'running'
            and j.claimed_at < now() - make_interval(secs => p_stale_seconds)
            and (
              j.attempts < j.max_attempts
-             or j.kind in ('storage.cleanup', 'memory.candidate_cleanup')
+             or j.kind = 'storage.cleanup'
            )))
   returning j.*;
 $$;
@@ -5173,7 +5082,7 @@ $$;
 create index if not exists db_jobs_failed_cleanup_run_at_idx
   on public.db_jobs(run_at)
   where status = 'failed'
-    and kind in ('storage.cleanup', 'memory.candidate_cleanup');
+    and kind = 'storage.cleanup';
 
 -- Cancellation for dedupe-keyed jobs (clear-cells in Postgres-driver mode):
 -- pending jobs are deleted outright; running jobs get a persisted
@@ -5199,88 +5108,82 @@ as $$
        + coalesce((select count(*) from marked), 0)::integer;
 $$;
 
-create or replace function public.claim_memory_upload_candidate(
-  p_candidate_id uuid
-)
-returns table(claim_status text, candidate_storage_path text)
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  candidate public.memory_object_candidates%rowtype;
-begin
-  select * into candidate from public.memory_object_candidates
-  where id = p_candidate_id for update;
-  if not found then
-    return query select 'missing'::text, null::text;
-    return;
-  end if;
-  if candidate.cleanup_after > now() then
-    return query select 'not_due'::text, null::text;
-    return;
-  end if;
-  update public.memory_object_candidates
-  set status = 'cleaning'
-  where id = candidate.id;
-  return query select 'claimed'::text, candidate.storage_path;
-end;
-$$;
-
-drop function if exists public.advance_memory_file(
-  uuid, bigint, bigint, uuid, uuid, text, integer, text, text, uuid, text,
-  text, uuid, uuid, uuid, uuid, bigint, bigint
-);
-drop function if exists public.advance_memory_file(
-  uuid, bigint, bigint, uuid, uuid, text, integer, text, text, uuid, text,
-  text, uuid, uuid, uuid, uuid, bigint, bigint, bigint
-);
 drop function if exists public.advance_memory_file(
   uuid, bigint, bigint, uuid, uuid, text, integer, text, text, text, uuid,
   text, text, uuid, uuid, uuid, uuid, bigint, bigint, bigint
 );
+drop function if exists public.begin_memory_file_upload(
+  uuid, bigint, bigint, uuid, text
+);
 
-create or replace function public.advance_memory_file(
+create or replace function public.memory_source_allows_app_memory(
+  p_surface text,
+  p_project_id uuid
+)
+returns boolean
+language sql
+-- Re-read grants after the caller's project-row lock wait. A stable function
+-- could retain the statement's older snapshot while a concurrent share wins.
+volatile
+security definer
+set search_path = public
+as $$
+  select case
+    when p_surface = 'word' then p_project_id is null
+    when p_surface = 'chat' and p_project_id is null then true
+    when p_surface in ('chat', 'tabular') and p_project_id is not null then exists (
+      select 1
+      from public.projects project
+      where project.id = p_project_id
+        and project.org_id is null
+        and not exists (
+          select 1
+          from public.project_access_grants grant_row
+          where grant_row.project_id = project.id
+        )
+    )
+    else false
+  end;
+$$;
+
+drop function if exists public.write_memory_file(
+  uuid, bigint, bigint, text, text, integer, text, uuid, text, uuid, uuid, uuid, bigint, bigint, bigint
+);
+create or replace function public.write_memory_file(
   p_memory_file_id uuid,
-  p_expected_version bigint,
+  p_expected_revision bigint,
   p_expected_epoch bigint,
-  p_version_id uuid,
-  p_candidate_id uuid,
-  p_storage_path text,
-  p_size_bytes integer,
+  p_content text,
   p_content_sha256 text,
+  p_size_bytes integer,
   p_source text,
-  p_change_summary text default null,
   p_updated_by uuid default null,
-  p_model text default null,
   p_source_surface text default null,
   p_source_chat_id uuid default null,
-  p_source_turn_id uuid default null,
   p_source_job_id uuid default null,
   p_consolidation_state_id uuid default null,
   p_consolidation_generation bigint default null,
   p_conversation_generation bigint default null,
   p_source_epoch bigint default null
 )
-returns table(applied boolean, new_version bigint, current_version_id uuid)
+returns table(applied boolean, new_revision bigint)
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
   target public.memory_files%rowtype;
-  existing public.memory_file_versions%rowtype;
   consolidation public.memory_consolidation_states%rowtype;
   activity public.memory_conversation_activity%rowtype;
-  candidate public.memory_object_candidates%rowtype;
-  stale_ids uuid[];
-  stale_paths text[];
 begin
-  if p_change_summary is not null and char_length(p_change_summary) > 500 then
-    raise exception using errcode = '22023', message = 'memory_change_summary_too_long';
+  if p_source not in ('manual', 'curator') then
+    raise exception using errcode = '22023', message = 'invalid_memory_source';
+  end if;
+  if p_size_bytes < 0 or p_size_bytes > 16384 then
+    raise exception using errcode = '22023', message = 'memory_content_too_large';
   end if;
   -- Match canonical DELETE's source -> scheduler-state lock order. Holding
-  -- this key-share lock through version promotion makes deletion and learning
+  -- this key-share lock through the write makes deletion and learning
   -- serialize without a check/write gap.
   if p_source = 'curator' then
     if p_consolidation_state_id is null
@@ -5341,14 +5244,13 @@ begin
     raise exception using errcode = 'P0002', message = 'memory_file_not_found';
   end if;
 
-  if p_source_job_id is not null then
-    select * into existing from public.memory_file_versions
-    where memory_file_id = p_memory_file_id
-      and source_job_id = p_source_job_id;
-    if found then
-      return query select false, existing.version, existing.id;
-      return;
-    end if;
+  -- A curator job that is retried after its transaction already committed
+  -- must not apply the same replacement twice.
+  if p_source_job_id is not null
+    and target.last_source_job_id = p_source_job_id
+  then
+    return query select false, target.revision;
+    return;
   end if;
 
   if p_source = 'curator' then
@@ -5357,6 +5259,13 @@ begin
     then
       raise exception using errcode = '40001', message = 'memory_job_superseded';
     end if;
+    if target.scope = 'user'
+      and not public.memory_source_allows_app_memory(
+        p_source_surface, activity.project_id
+      )
+    then
+      raise exception using errcode = '40001', message = 'memory_scope_ineligible';
+    end if;
   end if;
 
   if not target.enabled then
@@ -5365,145 +5274,57 @@ begin
   if target.epoch <> p_expected_epoch then
     raise exception using errcode = '40001', message = 'memory_epoch_conflict';
   end if;
-  if target.version <> p_expected_version then
-    raise exception using errcode = '40001', message = 'memory_version_conflict';
+  if target.revision <> p_expected_revision then
+    raise exception using errcode = '40001', message = 'memory_revision_conflict';
   end if;
-  select * into candidate from public.memory_object_candidates
-  where id = p_candidate_id for update;
-  if not found
-    or candidate.memory_file_id <> target.id
-    or candidate.epoch <> p_expected_epoch
-    or candidate.storage_path <> p_storage_path
-    or candidate.status <> 'uploading'
-  then
-    raise exception using errcode = '40001', message = 'memory_candidate_conflict';
-  end if;
-
-  insert into public.memory_file_versions(
-    id, memory_file_id, version, storage_path, size_bytes, content_sha256,
-    source, change_summary, updated_by, model, source_surface, source_chat_id,
-    source_turn_id, source_job_id
-  ) values (
-    p_version_id, p_memory_file_id, target.version + 1, p_storage_path,
-    p_size_bytes, p_content_sha256, p_source, p_change_summary, p_updated_by, p_model,
-    p_source_surface, p_source_chat_id, p_source_turn_id, p_source_job_id
-  );
 
   update public.memory_files
-  set version = target.version + 1,
-      current_version_id = p_version_id,
+  set content = p_content,
+      content_sha256 = p_content_sha256,
+      size_bytes = p_size_bytes,
+      revision = target.revision + 1,
+      status = case
+        when p_source = 'manual' and target.status = 'failed' then 'idle'
+        else target.status
+      end,
       last_error_code = null,
       last_source = p_source,
+      last_source_job_id = p_source_job_id,
       updated_by = p_updated_by,
       updated_at = now()
   where id = p_memory_file_id;
 
-  delete from public.memory_object_candidates where id = candidate.id;
-
-  -- Retention and cleanup are one transaction: storage paths remain durable
-  -- until a cleanup job exists, and a worker cannot observe that job until
-  -- the stale metadata has been removed by the same commit.
-  select
-    coalesce(array_agg(stale.id), '{}'::uuid[]),
-    coalesce(array_agg(stale.storage_path), '{}'::text[])
-  into stale_ids, stale_paths
-  from (
-    select id, storage_path
-    from public.memory_file_versions
-    where memory_file_id = p_memory_file_id
-    order by version desc
-    offset 50
-  ) stale;
-  if cardinality(stale_ids) > 0 then
-    insert into public.db_jobs(kind, payload, max_attempts, dedupe_key)
-    values (
-      'storage.cleanup',
-      jsonb_build_object('keys', to_jsonb(stale_paths), 'prefixes', '[]'::jsonb),
-      2147483647,
-      'memory-prune:' || p_memory_file_id::text || ':' || (target.version + 1)::text
-    );
-    delete from public.memory_file_versions where id = any(stale_ids);
-  end if;
-
   if p_source_job_id is not null then
     insert into public.memory_consolidation_results(
-      job_id, memory_file_id, scope, outcome, version
+      job_id, memory_file_id, scope, outcome, revision
     ) values (
-      p_source_job_id, target.id, target.scope, 'updated', target.version + 1
+      p_source_job_id, target.id, target.scope, 'updated', target.revision + 1
     ) on conflict (job_id, memory_file_id) do update
       set outcome = excluded.outcome,
-          version = excluded.version,
+          revision = excluded.revision,
           created_at = now();
   end if;
 
-  return query select true, target.version + 1, p_version_id;
-end;
-$$;
-
--- Preserve a durable staging pointer before any object-store write.
-create or replace function public.begin_memory_file_upload(
-  p_memory_file_id uuid,
-  p_expected_version bigint,
-  p_expected_epoch bigint,
-  p_candidate_id uuid,
-  p_storage_path text
-)
-returns table(candidate_id uuid, cleanup_job_id uuid)
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  target public.memory_files%rowtype;
-  cleanup_id uuid := gen_random_uuid();
-  cleanup_time timestamptz := now() + interval '1 hour';
-begin
-  select * into target from public.memory_files
-  where id = p_memory_file_id for update;
-  if not found then
-    raise exception using errcode = 'P0002', message = 'memory_file_not_found';
-  end if;
-  if not target.enabled then
-    raise exception using errcode = 'P0001', message = 'memory_disabled';
-  end if;
-  if target.epoch <> p_expected_epoch then
-    raise exception using errcode = '40001', message = 'memory_epoch_conflict';
-  end if;
-  if target.version <> p_expected_version then
-    raise exception using errcode = '40001', message = 'memory_version_conflict';
-  end if;
-  insert into public.memory_object_candidates(
-    id, memory_file_id, scope, owner_id, epoch, storage_path,
-    cleanup_job_id, cleanup_after
-  ) values (
-    p_candidate_id, target.id, target.scope,
-    coalesce(target.user_id, target.project_id), target.epoch, p_storage_path,
-    cleanup_id, cleanup_time
-  );
-  insert into public.db_jobs(
-    id, kind, payload, max_attempts, run_at, dedupe_key
-  ) values (
-    cleanup_id, 'memory.candidate_cleanup',
-    jsonb_build_object('candidateId', p_candidate_id),
-    2147483647, cleanup_time, 'memory-candidate:' || p_candidate_id::text
-  );
-  return query select p_candidate_id, cleanup_id;
+  return query select true, target.revision + 1;
 end;
 $$;
 
 drop function if exists public.wipe_memory_file(uuid, boolean);
 drop function if exists public.wipe_memory_file(uuid, boolean, uuid, text);
+drop function if exists public.wipe_memory_file(uuid, boolean, uuid, text, boolean);
+drop function if exists public.wipe_memory_file(
+  uuid, boolean, uuid, text, boolean
+);
+
 create or replace function public.wipe_memory_file(
   p_memory_file_id uuid,
   p_enabled boolean,
   p_updated_by uuid default null,
-  p_source text default 'wipe',
-  p_require_no_candidates boolean default false
+  p_source text default 'wipe'
 )
 returns table(
-  storage_paths text[],
   new_epoch bigint,
-  new_version bigint,
+  new_revision bigint,
   effective_enabled boolean,
   mutation_at timestamptz,
   mutation_by uuid
@@ -5514,9 +5335,7 @@ set search_path = public
 as $$
 declare
   target public.memory_files%rowtype;
-  paths text[];
-  candidate_job_ids uuid[];
-  candidate_cleanup_after timestamptz := now() + interval '1 hour';
+  changed_at timestamptz := now();
 begin
   if p_source not in ('wipe', 'settings') then
     raise exception using errcode = '22023', message = 'invalid_memory_source';
@@ -5526,69 +5345,36 @@ begin
   if not found then
     raise exception using errcode = 'P0002', message = 'memory_file_not_found';
   end if;
-  if p_require_no_candidates and exists (
-    select 1 from public.memory_object_candidates
-    where memory_file_id = target.id
-  ) then
-    raise exception using errcode = '55000', message = 'memory_cleanup_pending';
-  end if;
 
-  select coalesce(array_agg(storage_path), '{}'::text[]) into paths
-  from public.memory_file_versions where memory_file_id = target.id;
-
-  with abandoned as (
-    update public.memory_object_candidates
-    set status = 'abandoned',
-        cleanup_after = greatest(cleanup_after, candidate_cleanup_after)
-    where memory_file_id = target.id
-      and status in ('uploading', 'abandoned')
-    returning cleanup_job_id
-  )
-  select coalesce(array_agg(cleanup_job_id), '{}'::uuid[])
-  into candidate_job_ids from abandoned;
-  if cardinality(candidate_job_ids) > 0 then
-    update public.db_jobs
-    set run_at = greatest(run_at, candidate_cleanup_after)
-    where id = any(candidate_job_ids) and status = 'pending';
-  end if;
-
-  -- Never remove the only durable pointers to the objects until their cleanup
-  -- is itself durable. The job cannot be claimed until this transaction commits.
-  if cardinality(paths) > 0 then
-    insert into public.db_jobs(kind, payload, max_attempts, dedupe_key)
-    values (
-      'storage.cleanup',
-      jsonb_build_object('keys', to_jsonb(paths), 'prefixes', '[]'::jsonb),
-      2147483647,
-      'memory-wipe:' || target.id::text || ':' || (target.epoch + 1)::text
-    );
-  end if;
-
+  -- The body lives on this row, so erasure is the same UPDATE that fences
+  -- in-flight curator work: the epoch bump supersedes any job that read the
+  -- old content, and the revision bump invalidates loaded editor drafts.
   update public.memory_files
   set enabled = coalesce(p_enabled, target.enabled),
       epoch = target.epoch + 1,
-      version = target.version + 1,
-      learning_cutoff_at = now(),
-      current_version_id = null,
+      revision = target.revision + 1,
+      learning_cutoff_at = changed_at,
+      content = '',
+      content_sha256 = null,
+      size_bytes = 0,
       status = 'idle',
       last_error_code = null,
       last_source = p_source,
+      last_source_job_id = null,
       updated_by = p_updated_by,
-      updated_at = now()
+      updated_at = changed_at
   where id = target.id;
 
-  delete from public.memory_file_versions where memory_file_id = target.id;
-
   return query select
-    paths,
     target.epoch + 1,
-    target.version + 1,
+    target.revision + 1,
     coalesce(p_enabled, target.enabled),
-    now(),
+    changed_at,
     p_updated_by;
 end;
 $$;
 
+drop function if exists public.enable_memory_file(uuid, uuid);
 create or replace function public.enable_memory_file(
   p_memory_file_id uuid,
   p_updated_by uuid
@@ -5596,7 +5382,7 @@ create or replace function public.enable_memory_file(
 returns table(
   effective_enabled boolean,
   new_epoch bigint,
-  new_version bigint,
+  new_revision bigint,
   mutation_at timestamptz,
   mutation_by uuid
 )
@@ -5614,22 +5400,26 @@ begin
     raise exception using errcode = 'P0002', message = 'memory_file_not_found';
   end if;
   if target.enabled then
-    return query select true, target.epoch, target.version,
+    return query select true, target.epoch, target.revision,
       target.updated_at, target.updated_by;
     return;
   end if;
   update public.memory_files memory_file
   set enabled = true,
       epoch = target.epoch + 1,
-      version = target.version + 1,
+      revision = target.revision + 1,
       learning_cutoff_at = changed_at,
+      content = '',
+      content_sha256 = null,
+      size_bytes = 0,
+      last_source_job_id = null,
       status = 'idle',
       last_error_code = null,
       last_source = 'settings',
       updated_by = p_updated_by,
       updated_at = changed_at
   where memory_file.id = target.id;
-  return query select true, target.epoch + 1, target.version + 1,
+  return query select true, target.epoch + 1, target.revision + 1,
     changed_at, p_updated_by;
 end;
 $$;
@@ -5671,6 +5461,7 @@ declare
   queued_job_id uuid;
   cursor_advances boolean;
   actor_cursor_advances boolean;
+  app_turn_eligible boolean;
   app_enabled boolean;
   project_enabled boolean;
 begin
@@ -5736,6 +5527,9 @@ begin
   if p_project_id is not null and p_project_id is distinct from canonical_project_id then
     raise exception using errcode = '22023', message = 'invalid_memory_project';
   end if;
+  app_turn_eligible := public.memory_source_allows_app_memory(
+    p_surface, canonical_project_id
+  );
 
   insert into public.memory_conversation_activity(
     surface, conversation_id, actor_user_id, quiet_until
@@ -5756,15 +5550,21 @@ begin
   if not found then return; end if;
   if p_surface = 'chat' then
     update public.chat_messages message
-    set memory_eligible_at = terminal_at
+    set memory_eligible_at = terminal_at,
+        memory_app_eligible_at = case
+          when app_turn_eligible then terminal_at else null end
     where message.id = p_turn_id and message.chat_id = p_conversation_id;
   elsif p_surface = 'word' then
     update public.word_chat_messages message
-    set memory_eligible_at = terminal_at
+    set memory_eligible_at = terminal_at,
+        memory_app_eligible_at = case
+          when app_turn_eligible then terminal_at else null end
     where message.id = p_turn_id and message.chat_id = p_conversation_id;
   else
     update public.tabular_review_chat_messages message
-    set memory_eligible_at = terminal_at
+    set memory_eligible_at = terminal_at,
+        memory_app_eligible_at = case
+          when app_turn_eligible then terminal_at else null end
     where message.id = p_turn_id and message.chat_id = p_conversation_id;
   end if;
   delete from public.memory_conversation_turn_leases lease
@@ -5899,7 +5699,10 @@ begin
     select * into app_file from public.memory_files memory_file
     where memory_file.scope = 'user'
       and memory_file.user_id = queued_state.actor_user_id;
-    app_enabled := coalesce(app_file.enabled, false);
+    app_enabled := coalesce(app_file.enabled, false)
+      and public.memory_source_allows_app_memory(
+        p_surface, activity.project_id
+      );
     project_enabled := false;
     if activity.project_id is not null
       and queued_state.actor_user_id = activity.project_curator_actor_user_id
@@ -6386,8 +6189,6 @@ revoke all on public.courtlistener_opinion_cluster_index from anon, authenticate
 revoke all on public.audit_events from anon, authenticated;
 revoke all on public.db_jobs from anon, authenticated;
 revoke all on public.memory_files from anon, authenticated;
-revoke all on public.memory_file_versions from anon, authenticated;
-revoke all on public.memory_object_candidates from anon, authenticated;
 revoke all on public.memory_consolidation_states from anon, authenticated;
 revoke all on public.memory_conversation_activity from anon, authenticated;
 revoke all on public.memory_conversation_turn_leases from anon, authenticated;
@@ -6404,23 +6205,19 @@ revoke all on function public.claim_db_job(uuid, integer)
   from public, anon, authenticated;
 revoke all on function public.cancel_db_jobs(text[])
   from public, anon, authenticated;
-revoke all on function public.begin_memory_file_upload(uuid, bigint, bigint, uuid, text)
-  from public, anon, authenticated;
 revoke all on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean)
   from public, anon, authenticated;
 revoke all on function public.initialize_new_user_memory()
   from public, anon, authenticated;
 revoke all on function public.lock_memory_conversation_source(text, uuid, uuid)
   from public, anon, authenticated;
+revoke all on function public.memory_source_allows_app_memory(text, uuid)
+  from public, anon, authenticated;
 revoke all on function public.fence_memory_conversation_delete()
   from public, anon, authenticated;
-revoke all on function public.fence_memory_file_delete()
+revoke all on function public.write_memory_file(uuid, bigint, bigint, text, text, integer, text, uuid, text, uuid, uuid, uuid, bigint, bigint, bigint)
   from public, anon, authenticated;
-revoke all on function public.claim_memory_upload_candidate(uuid)
-  from public, anon, authenticated;
-revoke all on function public.advance_memory_file(uuid, bigint, bigint, uuid, uuid, text, integer, text, text, text, uuid, text, text, uuid, uuid, uuid, uuid, bigint, bigint, bigint)
-  from public, anon, authenticated;
-revoke all on function public.wipe_memory_file(uuid, boolean, uuid, text, boolean)
+revoke all on function public.wipe_memory_file(uuid, boolean, uuid, text)
   from public, anon, authenticated;
 revoke all on function public.enable_memory_file(uuid, uuid)
   from public, anon, authenticated;
@@ -6460,8 +6257,6 @@ grant select, insert, update, delete
      public.workflow_addons,
      public.mike_workflow_assets,
      public.memory_files,
-     public.memory_file_versions,
-     public.memory_object_candidates,
      public.memory_consolidation_states,
      public.memory_conversation_activity,
      public.memory_conversation_turn_leases,
@@ -6498,9 +6293,6 @@ grant execute
 grant execute
   on function public.cancel_db_jobs(text[])
   to service_role;
-grant execute
-  on function public.begin_memory_file_upload(uuid, bigint, bigint, uuid, text)
-  to service_role;
 grant execute on function public.create_project_with_memory(uuid, text, text, text, uuid, boolean)
   to service_role;
 grant execute on function public.initialize_new_user_memory()
@@ -6509,15 +6301,11 @@ grant execute on function public.lock_memory_conversation_source(text, uuid, uui
   to service_role;
 grant execute on function public.fence_memory_conversation_delete()
   to service_role;
-grant execute on function public.fence_memory_file_delete()
-  to service_role;
-grant execute on function public.claim_memory_upload_candidate(uuid)
+grant execute
+  on function public.write_memory_file(uuid, bigint, bigint, text, text, integer, text, uuid, text, uuid, uuid, uuid, bigint, bigint, bigint)
   to service_role;
 grant execute
-  on function public.advance_memory_file(uuid, bigint, bigint, uuid, uuid, text, integer, text, text, text, uuid, text, text, uuid, uuid, uuid, uuid, bigint, bigint, bigint)
-  to service_role;
-grant execute
-  on function public.wipe_memory_file(uuid, boolean, uuid, text, boolean)
+  on function public.wipe_memory_file(uuid, boolean, uuid, text)
   to service_role;
 grant execute
   on function public.enable_memory_file(uuid, uuid)

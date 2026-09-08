@@ -789,6 +789,51 @@ describe("projects.routes", () => {
             });
         });
 
+        it("applies the creator's saved project-memory default", async () => {
+            supabaseState.rpc = {
+                data: { id: "p11", name: "Quiet", user_id: "u1" },
+                error: null,
+            };
+            supabaseState.tables.user_profiles = {
+                data: { project_memory_default: false },
+                error: null,
+            };
+
+            const res = await request(app)
+                .post("/projects")
+                .set(...AUTH)
+                .send({ name: "Quiet" });
+
+            expect(res.status).toBe(201);
+            expect(res.body.memory_enabled).toBe(false);
+            const db = vi.mocked(createServerSupabase).mock.results.at(-1)
+                ?.value as ReturnType<typeof mockSupabase>;
+            expect(db.rpc).toHaveBeenCalledWith(
+                "create_project_with_memory",
+                expect.objectContaining({ p_memory_enabled: false }),
+            );
+        });
+
+        it("defaults new projects to memory on when the preference is unreadable", async () => {
+            supabaseState.rpc = {
+                data: { id: "p12", name: "Legacy", user_id: "u1" },
+                error: null,
+            };
+            // A database that has not applied the preference migration.
+            supabaseState.tables.user_profiles = {
+                data: null,
+                error: { code: "42703", message: "project_memory_default" },
+            };
+
+            const res = await request(app)
+                .post("/projects")
+                .set(...AUTH)
+                .send({ name: "Legacy" });
+
+            expect(res.status).toBe(201);
+            expect(res.body.memory_enabled).toBe(true);
+        });
+
         it("commits an explicit memory opt-out in the same project transaction", async () => {
             supabaseState.rpc = {
                 data: { id: "p10", name: "Private", user_id: "u1" },

@@ -253,25 +253,22 @@ describe("processClaimedJob", () => {
         expect(db.updates[0].payload).toMatchObject({ status: "failed" });
     });
 
-    it.each(["storage.cleanup", "memory.candidate_cleanup"])(
-        "keeps %s pending with an effectively unbounded retry budget",
-        async (kind) => {
-            const db = makeDb();
-            await processClaimedJob(
-                db as never,
-                {
-                    [kind]: async () => {
-                        throw new Error("storage unavailable");
-                    },
+    it("keeps storage.cleanup pending with an effectively unbounded retry budget", async () => {
+        const db = makeDb();
+        await processClaimedJob(
+            db as never,
+            {
+                "storage.cleanup": async () => {
+                    throw new Error("storage unavailable");
                 },
-                JOB({ kind, attempts: 8, max_attempts: 8 }),
-            );
-            expect(db.updates[0].payload).toMatchObject({
-                status: "pending",
-                max_attempts: 2_147_483_647,
-            });
-        },
-    );
+            },
+            JOB({ kind: "storage.cleanup", attempts: 8, max_attempts: 8 }),
+        );
+        expect(db.updates[0].payload).toMatchObject({
+            status: "pending",
+            max_attempts: 2_147_483_647,
+        });
+    });
 
     it("fails an unknown kind immediately — retrying cannot fix it", async () => {
         const db = makeDb();
@@ -286,7 +283,7 @@ describe("processClaimedJob", () => {
             db as never,
             {},
             JOB({
-                kind: "memory.candidate_cleanup",
+                kind: "storage.cleanup",
                 attempts: 20,
                 max_attempts: 20,
             }),
@@ -384,9 +381,6 @@ describe("runDbJobRetentionSweep", () => {
         const failedPurge = db.deletes.find(
             (d) => d.status === "failed" && "lt:finished_at" in d,
         );
-        expect(failedPurge?.["neq:kind"]).toEqual([
-            "storage.cleanup",
-            "memory.candidate_cleanup",
-        ]);
+        expect(failedPurge?.["neq:kind"]).toBe("storage.cleanup");
     });
 });
