@@ -380,7 +380,9 @@ documentsRouter.delete(
                 result.kind === "doc_not_found" ||
                 result.kind === "version_not_found"
                     ? 404
-                    : 400;
+                    : result.kind === "version_forbidden"
+                      ? 403
+                      : 400;
             return void res.status(status).json({ detail: result.detail });
         }
         res.json(result.payload);

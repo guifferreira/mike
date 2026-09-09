@@ -369,7 +369,11 @@ export async function deleteVersion(
     | { ok: true; payload: Record<string, unknown> }
     | {
           ok: false;
-          kind: "doc_not_found" | "version_not_found" | "only_version";
+          kind:
+              | "doc_not_found"
+              | "version_not_found"
+              | "only_version"
+              | "version_forbidden";
           detail: string;
       }
     // Every DB failure on this path is an opaque internal error — the route
@@ -388,18 +392,25 @@ export async function deleteVersion(
     // Deleting a version is creator-scoped (with the admin heir once the
     // creator's account is gone). Workflow documents are the exception: an
     // editor on the workflow share manages its versions too.
-    if (
-        !access.ok ||
-        (!creatorScopedAllowed(access, access.doc.user_id) &&
-            !(
-                access.doc.workflow_id &&
-                can(access.projectRole, "content.edit")
-            ))
-    )
+    //
+    // Same split as the whole-document DELETE: a caller with no verdict is
+    // told the row does not exist, and a caller who can open the document but
+    // not delete this version is REFUSED by name. Collapsing both into 404
+    // told a Viewer their version had vanished.
+    if (!access.ok)
         return {
             ok: false,
             kind: "doc_not_found",
             detail: "Document not found",
+        };
+    if (
+        !creatorScopedAllowed(access, access.doc.user_id) &&
+        !(access.doc.workflow_id && can(access.projectRole, "content.edit"))
+    )
+        return {
+            ok: false,
+            kind: "version_forbidden",
+            detail: "You do not have permission to delete this version.",
         };
     const keys = await captureInlineDocumentCleanup(db, {
         versionIds: [versionId],

@@ -31,6 +31,7 @@ import {
     deleteMcpConnector,
     deletePrivateMemories,
     deleteUserAccount,
+    describeAccountDeletionBlockers,
     deleteUserChats,
     deleteUserProjectsData,
     deleteUserTabularReviews,
@@ -618,14 +619,12 @@ userRouter.delete(
         const db = createServerSupabase();
         const result = await deleteUserAccount(db, userId, userEmail, token);
         if (!result.ok) {
-            if ("kind" in result && result.kind === "org_successor_required") {
-                const names = result.blockers.map((org) => org.name).join(", ");
+            if ("kind" in result && result.kind === "org_successor_required")
                 return void res.status(409).json({
                     code: "org_successor_required",
-                    detail: `You are the only admin of ${names}. Make another member an admin, or delete the organization, before deleting your account.`,
+                    detail: describeAccountDeletionBlockers(result.blockers),
                     organizations: result.blockers,
                 });
-            }
             return void sendInternalError(res, result.error);
         }
         res.status(204).send();

@@ -122,5 +122,6 @@ export { EXPORT_TYPES, MAX_ZIP_EXPORT_DOCUMENTS, type ExportType } from "./user.
 
 export { deleteUserOrganizations, deleteAllUserChats, deleteAllUserTabularReviews, deleteProjectsByIds, deleteUserProjects, deleteUserAccountData, listOrgsBlockingAccountDeletion } from "./user.dataCleanup";
 export type { AccountDeletionOrgBlocker } from "./user.dataCleanup";
+export { describeAccountDeletionBlockers } from "./user.account";
 
 export { userExportFilename, buildUserChatsExport, buildUserTabularReviewsExport, projectManifestFilename, buildProjectExportManifest, buildUserAccountExport } from "./user.dataExport";

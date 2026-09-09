@@ -135,13 +135,19 @@ export async function validateDestinationAccess(
       access.ok &&
       (creatorScopedAllowed(access, document.user_id) ||
         (Boolean(document.workflow_id) && canEditContent));
-    if (
-      !access.ok ||
-      !canEditContent ||
-      (manifest.purpose === "document_version_replace" && !canReplace)
-    ) {
-      return failure(404, { detail: "Document not found" });
-    }
+    // Split, the way the project branch above already splits: no verdict at
+    // all is a 404, and a caller who can open the document but not write to
+    // it is refused by name. Collapsing both into 404 told every Viewer
+    // their document had disappeared the moment they tried to upload.
+    if (!access.ok) return failure(404, { detail: "Document not found" });
+    if (!canEditContent)
+      return failure(403, {
+        detail: "You do not have permission to edit content in this project.",
+      });
+    if (manifest.purpose === "document_version_replace" && !canReplace)
+      return failure(403, {
+        detail: "You do not have permission to replace this version.",
+      });
     if (manifest.purpose === "document_version_create") return { ok: true };
 
     const { data: version, error: versionError } = await db

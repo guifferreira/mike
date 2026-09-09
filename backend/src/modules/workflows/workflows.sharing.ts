@@ -2,7 +2,7 @@
 import { type Db } from "../../lib/supabase";
 import { findMissingUserEmails, loadProfileUsersByEmail } from "../../lib/userLookup";
 import { type ProjectRole } from "../../lib/permissions";
-import { deleteOrgAccessOverride, findAssignableOrgMember, isOrgAssignableRole, listOrgAccessPeople, setOrgAccessOverride } from "../../lib/orgAccessOverrides";
+import { deleteOrgAccessOverride, findAssignableOrgMember, isOrgAssignableRole, listOrgAccessPeople, setOrgAccessOverrides } from "../../lib/orgAccessOverrides";
 import { resolveWorkflowAccess, resolveCreatorScopedWorkflow } from "./workflows.access";
 
 export type ListSharesResult =
@@ -271,20 +271,21 @@ export async function shareWorkflow(
       if (!target.ok) return target;
       targets.push({ userId: target.member.userId });
     }
-    // Validation is now complete, so only a database failure can still
-    // stop this half-way — and that answers 500, not a misleading 400.
-    for (const target of targets) {
-      const result = await setOrgAccessOverride(db, {
-        kind: "workflow",
-        resourceId: workflowId,
-        orgId,
-        userId: target.userId,
-        role,
-        assignedBy: userId,
-      });
-      if (!result.ok)
-        return { ok: false, kind: "db_error", error: result.detail };
-    }
+    // Validation is complete, so only a database failure can still stop
+    // this — and it must not stop it HALF WAY. One bulk upsert is one
+    // statement: the org-membership triggers on the override table can
+    // still refuse a row, and when they do the whole batch rolls back
+    // instead of leaving the people ahead of the refusal already granted.
+    const written = await setOrgAccessOverrides(db, {
+      kind: "workflow",
+      resourceId: workflowId,
+      orgId,
+      userIds: targets.map((target) => target.userId),
+      role,
+      assignedBy: userId,
+    });
+    if (!written.ok)
+      return { ok: false, kind: "db_error", error: written.detail };
     return { ok: true };
   }
 

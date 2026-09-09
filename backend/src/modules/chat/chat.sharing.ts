@@ -59,6 +59,17 @@ export async function grantChatAccess(
               .eq("user_id", args.chat.user_id)
               .maybeSingle()
         : null;
+    // A failed read is not "the creator has no email". Swallowing the error
+    // sent `creatorEmail: null` into upsertContentGrant, which is what stops
+    // the creator being handed a guest grant on their own chat — so a
+    // transient database fault quietly created exactly the row the check
+    // exists to prevent.
+    if (creatorProfile?.error)
+        return {
+            ok: false,
+            kind: "db_error",
+            detail: creatorProfile.error.message,
+        };
     return upsertContentGrant(db, {
         kind: "chat",
         resourceId: args.chatId,
