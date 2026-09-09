@@ -30,8 +30,10 @@ export type UserProfileRow = {
 const PROFILE_SELECT_NEWEST =
     "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, memory_curator_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, project_memory_default";
 
+// memory_curator_model and project_memory_default arrive in the same
+// migration, so the deploy-before-migrate retry must drop both.
 const PROFILE_SELECT_NO_MEMORY_CURATOR_MODEL =
-    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode, project_memory_default";
+    "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode";
 
 const PROFILE_SELECT_WITH_CHAT_SELECTIONS =
     "display_name, organisation, jurisdiction, practice_setting, professional_title, practice_areas, onboarding_version, password_set_at, message_credits_used, credits_reset_date, tier, title_model, tabular_model, last_selected_chat_model, last_selected_reasoning_level, mfa_on_login, legal_research_us, quick_actions_visible, dark_mode";
@@ -104,7 +106,10 @@ export async function selectProfile(db: Db, userId: string, mode: "maybe" | "sin
     if (!newest.error) return newest;
     let cascadeError: unknown = newest.error;
 
-    if (isMissingProfileColumn(cascadeError, "memory_curator_model")) {
+    if (
+        isMissingProfileColumn(cascadeError, "memory_curator_model") ||
+        isMissingProfileColumn(cascadeError, "project_memory_default")
+    ) {
         const previousQuery = db
             .from("user_profiles")
             .select(PROFILE_SELECT_NO_MEMORY_CURATOR_MODEL)
@@ -117,6 +122,7 @@ export async function selectProfile(db: Db, userId: string, mode: "maybe" | "sin
             if (previous.data && typeof previous.data === "object") {
                 Object.assign(previous.data as Record<string, unknown>, {
                     memory_curator_model: null,
+                    project_memory_default: null,
                 });
             }
             return previous;
