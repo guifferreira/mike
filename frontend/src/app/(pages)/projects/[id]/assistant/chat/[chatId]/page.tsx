@@ -437,9 +437,23 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     // directions — an editor who created the chat was offered a Delete that
     // came back 403, and a viewer demoted after starting a thread kept a live
     // composer on it. The ladder is the only answer this page asks for.
-    const canSendChat = canEditContent;
+    //
+    // Three answers, not two — the same tri-state the standalone chat page
+    // adopted. `can(null, …)` is false, and false here is a SENTENCE: the
+    // composer reads "Viewing only — sending needs edit access". A project
+    // owner opening their own chat cold saw that accusation for the length of
+    // GET /projects/:id. `null` keeps the composer closed while we wait
+    // without asserting anything about who the reader is.
+    const canSendChat = projectRole === null ? null : canEditContent;
     const canDeleteChat = can(projectRole, "container.delete");
     const composerReady = chatLoaded && projectLoaded && !authLoading;
+    // Rename and Delete are offered by the header menu, whose handlers return
+    // in silence while the role is unknown — deliberately, since accusing
+    // somebody before the payload lands is a guess, but a menu item that
+    // quietly does nothing when clicked is indistinguishable from a broken
+    // one. Disable them for that window, the way the upload button already
+    // does with `!canEditContent`.
+    const roleKnown = projectRole !== null;
     const pendingInitialUserMessageRef = useRef<Message | null>(
         initialMessages.length === 1 && initialMessages[0].role === "user"
             ? initialMessages[0]
@@ -1865,7 +1879,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         label: "Rename",
                                         icon: Pencil,
                                         onSelect: () => void handleRenameChat(),
-                                        disabled: !chatLoaded || !activeChatId,
+                                        disabled:
+                                            !chatLoaded ||
+                                            !activeChatId ||
+                                            !roleKnown,
                                     },
                                     {
                                         label: "Memory",
@@ -1883,7 +1900,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         disabled:
                                             deletingChat ||
                                             !chatLoaded ||
-                                            !activeChatId,
+                                            !activeChatId ||
+                                            !roleKnown,
                                         variant: "danger" as const,
                                     },
                                 ].filter((item) =>

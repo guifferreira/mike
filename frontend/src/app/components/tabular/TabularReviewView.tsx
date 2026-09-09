@@ -1666,7 +1666,7 @@ export function TRView({ reviewId, projectId }: Props) {
                             onCitationClick={handleTabularCitationClick}
                             initialChatId={selectedChatId}
                             onChatIdChange={setSelectedChatId}
-                            canSend={canEditContent}
+                            canSend={roleKnown ? canEditContent : null}
                         />
                     )}
                 </div>

@@ -112,6 +112,13 @@ export function NewTRModal({
     const [groupBySubfolder, setGroupBySubfolder] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [creating, setCreating] = useState(false);
+    // The review already exists, because a first attempt created it and then
+    // failed on the grants. The page holds that row and the retry reuses it,
+    // so the earlier steps no longer describe anything this dialog can still
+    // change: switching Personal → a project on the second attempt left the
+    // review where it was created and applied the new scope's assignments to
+    // it. Back retires once this is true.
+    const [reviewExists, setReviewExists] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const creatingRef = useRef(false);
@@ -219,6 +226,7 @@ export function NewTRModal({
 
     function handleClose() {
         setStep("details");
+        setReviewExists(false);
         setTitle("");
         setUnderProject(false);
         setSelectedProjectId("");
@@ -284,6 +292,7 @@ export function NewTRModal({
                 // closing here would hide the only account of it, and the
                 // generic create failure would be a lie.
                 setUploadError(partialFailure);
+                setReviewExists(true);
                 return;
             }
             handleClose();
@@ -460,7 +469,10 @@ export function NewTRModal({
                     ? {
                           label: "Back",
                           onClick: () => setStep("access"),
-                          disabled: uploading,
+                          disabled: uploading || reviewExists,
+                          title: reviewExists
+                              ? "The review has been created — its details and access can be changed from the review itself."
+                              : undefined,
                       }
                     : step === "access"
                       ? {
