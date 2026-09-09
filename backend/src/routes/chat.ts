@@ -1141,7 +1141,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
           persistedEvents,
           citations,
         );
-        completedTurnPersisted = completedTurnPersisted && appended;
+        completedTurnPersisted = appended;
         } else {
             const saveError = await updateReservedAssistantMessage(
                 persistedEvents.length ? persistedEvents : null,

@@ -161,49 +161,6 @@ function memoryCurrentFromFile(file: MemoryFileRow): MemoryCurrent {
   };
 }
 
-function isRevisionConflict(error: unknown): boolean {
-  const message =
-    error && typeof error === "object" && "message" in error
-      ? String((error as { message?: unknown }).message ?? "")
-      : String(error ?? "");
-  return message.includes("memory_revision_conflict");
-}
-
-function isEpochConflict(error: unknown): boolean {
-  const message =
-    error && typeof error === "object" && "message" in error
-      ? String((error as { message?: unknown }).message ?? "")
-      : String(error ?? "");
-  return (
-    message.includes("memory_epoch_conflict") ||
-    message.includes("memory_scope_ineligible")
-  );
-}
-
-function isDisabled(error: unknown): boolean {
-  const message =
-    error && typeof error === "object" && "message" in error
-      ? String((error as { message?: unknown }).message ?? "")
-      : String(error ?? "");
-  return message.includes("memory_disabled");
-}
-
-function isSuperseded(error: unknown): boolean {
-  const message =
-    error && typeof error === "object" && "message" in error
-      ? String((error as { message?: unknown }).message ?? "")
-      : String(error ?? "");
-  return message.includes("memory_job_superseded");
-}
-
-function isConversationNotQuiet(error: unknown): boolean {
-  const message =
-    error && typeof error === "object" && "message" in error
-      ? String((error as { message?: unknown }).message ?? "")
-      : String(error ?? "");
-  return message.includes("memory_conversation_not_quiet");
-}
-
 export async function writeMemoryFile(args: {
   db: Db;
   file: MemoryFileRow;
@@ -263,22 +220,28 @@ export async function writeMemoryFile(args: {
     p_source_epoch: args.sourceEpoch ?? null,
   });
   if (error) {
-    if (isConversationNotQuiet(error)) {
+    const message = error.message ?? "";
+    if (message.includes("memory_conversation_not_quiet")) {
       throw new MemoryConversationNotQuietError(
         "Memory conversation is not quiet",
       );
     }
-    if (isEpochConflict(error)) {
+    if (
+      message.includes("memory_epoch_conflict") ||
+      message.includes("memory_scope_ineligible")
+    ) {
       if (args.expectedEpoch != null) {
         throw new MemoryEpochSupersededError("Memory scope was reset");
       }
       throw new MemoryRevisionConflictError("Memory revision changed");
     }
-    if (isRevisionConflict(error)) {
+    if (message.includes("memory_revision_conflict")) {
       throw new MemoryRevisionConflictError("Memory revision changed");
     }
-    if (isDisabled(error)) throw new MemoryDisabledError("Memory is disabled");
-    if (isSuperseded(error)) {
+    if (message.includes("memory_disabled")) {
+      throw new MemoryDisabledError("Memory is disabled");
+    }
+    if (message.includes("memory_job_superseded")) {
       throw new MemoryJobSupersededError("Memory curator job was superseded");
     }
     throw new Error("Failed to save memory");

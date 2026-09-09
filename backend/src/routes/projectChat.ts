@@ -533,7 +533,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
           persistedEvents,
           citations,
         );
-        completedTurnPersisted = completedTurnPersisted && appended;
+        completedTurnPersisted = appended;
         } else {
         const { error: saveError } = await db.from("chat_messages").insert({
           id: assistantMessageId,
