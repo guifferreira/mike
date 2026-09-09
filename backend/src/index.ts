@@ -1,3 +1,5 @@
+// Sentry must hook http/express before anything else loads (see file).
+import "./instrument";
 import type { Server } from "node:http";
 import { Worker as ThreadWorker } from "node:worker_threads";
 import path from "node:path";
@@ -6,6 +8,7 @@ import { enforceDocumentLifecycleMigration } from "./lib/dbq/lifecycleGuard";
 import { manifestPublicKey } from "./lib/manifestSigning";
 import { validateRuntimeConfiguration } from "./lib/runtimeConfig";
 import { startAllWorkers, stopAllWorkers } from "./workerRuntime";
+import { flushSentry, reportError } from "./lib/observability/sentry";
 
 const PORT = process.env.PORT ?? 3001;
 
@@ -20,8 +23,9 @@ try {
     console.log(`Export manifests signed with key ${signingKey.key_id}`);
   }
 } catch (err) {
+  reportError(err, { tags: { component: "boot" }, level: "fatal" });
   console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
+  void flushSentry().finally(() => process.exit(1));
 }
 
 /**
@@ -55,6 +59,10 @@ function spawnWorkerThread(): void {
     execArgv: isTs ? ["--require", "tsx/cjs"] : [],
   });
   workerThread.on("error", (err) => {
+    // An uncaught throw inside the thread. The thread's own Sentry client
+    // usually reports it first; this is the parent's view with the respawn
+    // context, deduplicated by Sentry on the identical stack.
+    reportError(err, { tags: { component: "worker-thread-supervisor" } });
     console.error("[worker-thread] error", err);
   });
   workerThread.on("exit", (code) => {
@@ -63,6 +71,14 @@ function spawnWorkerThread(): void {
     // A crashed worker thread must not silently kill all background
     // processing — respawn after a short pause. Durable state (db_jobs,
     // Redis) means nothing is lost across the gap.
+    reportError(
+      new Error(`Background worker thread exited with code ${code}`),
+      {
+        tags: { component: "worker-thread-supervisor" },
+        extra: { exit_code: code },
+        fingerprint: ["worker-thread-exit"],
+      },
+    );
     console.error(
       `[worker-thread] exited with code ${code}; respawning in 5s`,
     );
@@ -137,10 +153,13 @@ async function shutdown(signal: string) {
         listening.close((err) => (err ? reject(err) : resolve())),
       );
     await stopBackgroundWork();
+    await flushSentry();
     console.log("Shutdown complete");
     process.exit(0);
   } catch (err) {
+    reportError(err, { tags: { component: "shutdown" } });
     console.error("Error during graceful shutdown", err);
+    await flushSentry();
     process.exit(1);
   }
 }
