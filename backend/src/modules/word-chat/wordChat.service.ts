@@ -775,7 +775,7 @@ export async function prepareWordChatStream(
         filename: info.filename,
       })),
     ];
-    const nonce = generateSpotlightNonce();
+    const nonce = generateSpotlightNonce(persistChat ? chatId : null);
     const enrichedMessages = await enrichWithPriorEvents(
       messages,
       persistChat ? chatId : null,

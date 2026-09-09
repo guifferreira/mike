@@ -689,6 +689,7 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       reasoning: selectedReasoningLevel,
       apiKeys,
       signal: stream.signal,
+      conversationId: persistChat ? chatId : null,
         includeMemory: true,
         memoryProjectId: null,
       nonce,

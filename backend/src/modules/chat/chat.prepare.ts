@@ -346,7 +346,7 @@ export async function prepareChatStream(
         }));
         // Generate the nonce before enriching prior events so document filenames
         // and workflow titles replayed from earlier turns are fenced as well.
-        const nonce = generateSpotlightNonce();
+        const nonce = generateSpotlightNonce(chatId);
         const enrichedMessages = await enrichWithPriorEvents(
             messages,
             chatId,

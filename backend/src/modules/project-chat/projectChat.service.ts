@@ -408,7 +408,7 @@ export async function prepareProjectChatStream(
         );
         // Generate the nonce before adding request metadata or prior events so
         // every document filename is fenced wherever it enters the prompt.
-        const nonce = generateSpotlightNonce();
+        const nonce = generateSpotlightNonce(chatId);
         const documentPromptRef = (
             documentId: string,
             requestFilename: string,
