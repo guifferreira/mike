@@ -459,22 +459,28 @@ describe("NewProjectModal sharing", () => {
   it("persists a changed memory opt-out before continuing after a partial upload", async () => {
     const user = userEvent.setup({ delay: null });
     const onCreated = renderModal();
-    vi.mocked(uploadProjectDocuments).mockResolvedValue([
-      {
-        clientId: "one",
-        filename: "saved.pdf",
-        status: "completed",
-        result: { id: "doc-1", filename: "saved.pdf" } as never,
-        errorCode: null,
-      },
-      {
-        clientId: "two",
-        filename: "failed.pdf",
-        status: "error",
-        result: null,
-        errorCode: "processing_failed",
-      },
-    ]);
+    // Echo the client ids the modal sends: completed uploads are tracked by
+    // the id each File went out under, so an outcome with an invented id
+    // would read as a file that never landed.
+    vi.mocked(uploadProjectDocuments).mockImplementation(async (_id, inputs) =>
+      inputs.map((input) =>
+        input.file.name === "saved.pdf"
+          ? {
+              clientId: input.clientId ?? "one",
+              filename: "saved.pdf",
+              status: "completed" as const,
+              result: { id: "doc-1", filename: "saved.pdf" } as never,
+              errorCode: null,
+            }
+          : {
+              clientId: input.clientId ?? "two",
+              filename: "failed.pdf",
+              status: "error" as const,
+              result: null,
+              errorCode: "processing_failed",
+            },
+      ),
+    );
 
     await user.type(screen.getByPlaceholderText("Add project name"), "P");
     const fileInput =
@@ -752,6 +758,109 @@ describe("NewProjectModal sharing", () => {
         await user.click(screen.getByRole("button", { name: "Close" }));
         fireEvent.keyDown(document, { key: "Escape" });
         expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("keeps two files that happen to share a name", async () => {
+        // The picker deduplicated by NAME, so the second `contract.pdf` — a
+        // normal thing to attach from two different folders — was dropped
+        // without a word.
+        const user = userEvent.setup({ delay: null });
+        renderModal();
+
+        await user.type(screen.getByPlaceholderText("Add project name"), "P");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        await user.click(screen.getByRole("button", { name: "Next" }));
+
+        const input = document.querySelector(
+            'input[type="file"]',
+        ) as HTMLInputElement;
+        // Two separate picks, as a user attaching from two folders makes
+        // them: the name test compared each new file against the ones
+        // already staged, so the second one never arrived.
+        fireEvent.change(input, {
+            target: { files: [new File(["a"], "contract.pdf")] },
+        });
+        fireEvent.change(input, {
+            target: { files: [new File(["b"], "contract.pdf")] },
+        });
+
+        expect(
+            await screen.findByRole("button", { name: /Upload \(2\)/ }),
+        ).toBeInTheDocument();
+
+        await user.click(
+            screen.getByRole("button", { name: "Create project" }),
+        );
+
+        await waitFor(() => expect(uploadProjectDocuments).toHaveBeenCalled());
+        const [, sentFiles] = vi.mocked(uploadProjectDocuments).mock.calls[0];
+        expect(sentFiles).toHaveLength(2);
+        // Each carries its own id, so an outcome can be traced back to the
+        // File that produced it rather than to a name they share.
+        expect(sentFiles[0].clientId).toBeTruthy();
+        expect(sentFiles[0].clientId).not.toBe(sentFiles[1].clientId);
+    });
+
+    it("says the attached files are still pending when a grant is refused", async () => {
+        // Grants run before the attachments, so a refusal there means nothing
+        // the user picked has been sent — an error that mentions only the
+        // sharing reads as though the files went in.
+        const user = userEvent.setup({ delay: null });
+        renderModal();
+        vi.mocked(grantProjectAccess).mockRejectedValue(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+
+        await fillAndAdd(user, "counsel@firm.test", "editor");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        const input = document.querySelector(
+            'input[type="file"]',
+        ) as HTMLInputElement;
+        fireEvent.change(input, {
+            target: { files: [new File(["a"], "a.pdf"), new File(["b"], "b.pdf")] },
+        });
+        await user.click(
+            await screen.findByRole("button", { name: "Create project" }),
+        );
+
+        expect(
+            await screen.findByText(
+                /The 2 selected files are still pending and will be attached when you try again\./,
+            ),
+        ).toBeInTheDocument();
+        expect(uploadProjectDocuments).not.toHaveBeenCalled();
+    });
+
+    it("locks the workspace once the project exists but keeps Back open", async () => {
+        // The retry reuses the created project, so a Personal → organization
+        // switch on the second attempt left the project where it was and
+        // applied the new organization's overrides to it. Back itself stays
+        // open: a retry persists a changed memory choice, so the details
+        // step still describes something that can change.
+        const user = userEvent.setup({ delay: null });
+        renderModal();
+        vi.mocked(grantProjectAccess).mockRejectedValue(
+            new MikeApiError({ status: 403, message: "Not allowed" }),
+        );
+
+        await fillAndAdd(user, "counsel@firm.test", "editor");
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+
+        await user.click(
+            await screen.findByRole("button", { name: "Create project" }),
+        );
+        await screen.findByText(/Project created, but access was not granted/);
+
+        expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        await user.click(screen.getByRole("button", { name: "Back" }));
+        expect(
+            screen.getByLabelText("Share across Organisation"),
+        ).toBeDisabled();
+        expect(
+            screen.getByText(/workspace can no longer be changed here/),
+        ).toBeInTheDocument();
     });
 
     it("says so when the organization list cannot be loaded", async () => {
