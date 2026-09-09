@@ -3,6 +3,7 @@ import {
   checkProjectAccess,
   ensureChatAccess,
   ensureReviewAccess,
+  projectHasSharedAudience,
 } from "../access";
 import {
   streamChatWithTools,
@@ -150,7 +151,9 @@ function askInputEvidence(
   const event = value as Record<string, unknown>;
   if (event.type !== "ask_inputs_response") return [];
   const recordedAt =
-    typeof event.recorded_at === "string" ? event.recorded_at : fallbackTimestamp;
+    typeof event.recorded_at === "string"
+      ? event.recorded_at
+      : fallbackTimestamp;
   if (!timestampInWindow(recordedAt, learningCutoffAt, terminalAt)) return [];
   const authorUserId = event.author_user_id;
   const attributed =
@@ -214,9 +217,7 @@ export function buildMemoryCuratorTranscript(
   const byId = new Map(boundedRows.map((row) => [row.id, row]));
   for (const row of boundedRows) {
     const eligibleAt =
-      scope === "user"
-        ? row.memory_app_eligible_at
-        : row.memory_eligible_at;
+      scope === "user" ? row.memory_app_eligible_at : row.memory_eligible_at;
     if (
       row.role !== "assistant" ||
       !row.memory_input_message_id ||
@@ -315,9 +316,7 @@ function timestampInWindow(
 ): boolean {
   const timestamp = timestampMicros(value);
   if (timestamp == null) return false;
-  const cutoff = learningCutoffAt
-    ? timestampMicros(learningCutoffAt)
-    : null;
+  const cutoff = learningCutoffAt ? timestampMicros(learningCutoffAt) : null;
   // Future-only learning and destructive forget use an exclusive DB-time
   // boundary. Preserve PostgreSQL microseconds instead of truncating through
   // JavaScript Date milliseconds.
@@ -332,9 +331,7 @@ function timestampMicros(value: string): bigint | null {
   );
   if (!match) {
     const milliseconds = Date.parse(value);
-    return Number.isFinite(milliseconds)
-      ? BigInt(milliseconds) * 1_000n
-      : null;
+    return Number.isFinite(milliseconds) ? BigInt(milliseconds) * 1_000n : null;
   }
   const seconds = Date.parse(`${match[1]}${match[3]}`);
   if (!Number.isFinite(seconds)) return null;
@@ -366,7 +363,10 @@ function conversationLoadFailure(error: unknown, stage: string): Error {
 
 export async function loadEligibleMemoryMessages(
   db: Db,
-  table: "chat_messages" | "word_chat_messages" | "tabular_review_chat_messages",
+  table:
+    | "chat_messages"
+    | "word_chat_messages"
+    | "tabular_review_chat_messages",
   conversationId: string,
   actorUserId: string,
   includeProjectEvidence = false,
@@ -433,21 +433,6 @@ export async function loadEligibleMemoryMessages(
   });
 }
 
-async function privateProjectAllowsAppMemory(
-  db: Db,
-  projectId: string,
-  projectOrgId: string | null | undefined,
-): Promise<boolean> {
-  if (projectOrgId) return false;
-  const { data, error } = await db
-    .from("project_access_grants")
-    .select("id")
-    .eq("project_id", projectId)
-    .limit(1);
-  if (error) throw new Error("Memory curator could not resolve project scope");
-  return (data ?? []).length === 0;
-}
-
 async function loadConversation(
   db: Db,
   state: ConsolidationState,
@@ -490,11 +475,11 @@ async function loadConversation(
       projectWritable =
         projectAccess.ok && can(projectAccess.projectRole, "content.edit");
       appMemoryEligible = projectAccess.ok
-        ? await privateProjectAllowsAppMemory(
+        ? !(await projectHasSharedAudience(
             db,
             projectId,
             projectAccess.project.org_id,
-          )
+          ))
         : false;
     }
     model = (data.model as string | null) ?? null;
@@ -561,11 +546,11 @@ async function loadConversation(
       projectWritable =
         projectAccess.ok && can(projectAccess.projectRole, "content.edit");
       appMemoryEligible = projectAccess.ok
-        ? await privateProjectAllowsAppMemory(
+        ? !(await projectHasSharedAudience(
             db,
             projectId,
             projectAccess.project.org_id,
-          )
+          ))
         : false;
     }
     model = (chat.model as string | null) ?? null;
@@ -650,9 +635,7 @@ export async function runMemoryCuratorScope(
     args.file.scope === "user"
       ? `This is app-wide memory for one user. Keep only durable, cross-project user facts, explicit preferences, recurring working conventions, and stable personal context directly supported by that user's words. Never copy project-specific or client-confidential matter facts into app memory.`
       : `This is shared project memory. Keep only durable matter facts, definitions, participant roles, explicit decisions, and working conventions that will help project members later. Do not store unrelated personal preferences. Assume every project member can read the result.`;
-  let written:
-    | Awaited<ReturnType<typeof writeMemoryFile>>
-    | null = null;
+  let written: Awaited<ReturnType<typeof writeMemoryFile>> | null = null;
   let terminalReason: CuratorScopeOutcome["reason"] | null = null;
   let invalidCalls = 0;
   let writeFailure: unknown;
@@ -810,9 +793,9 @@ export async function runMemoryCuratorScope(
   }
   // `written` is assigned from the async runTools callback. TypeScript does
   // not include callback side effects in outer control-flow narrowing.
-  const completedWrite = written as
-    | Awaited<ReturnType<typeof writeMemoryFile>>
-    | null;
+  const completedWrite = written as Awaited<
+    ReturnType<typeof writeMemoryFile>
+  > | null;
   if (completedWrite) {
     return {
       outcome: completedWrite.applied ? "updated" : "no_change",
@@ -982,7 +965,8 @@ async function conversationGate(
     .eq("surface", state.surface)
     .eq("conversation_id", state.conversation_id)
     .maybeSingle();
-  if (error) throw new Error("Memory curator could not load conversation activity");
+  if (error)
+    throw new Error("Memory curator could not load conversation activity");
   if (
     !data ||
     data.deleted_at ||
@@ -1003,7 +987,8 @@ async function conversationGate(
     .order("expires_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (leaseError) throw new Error("Memory curator could not load conversation activity");
+  if (leaseError)
+    throw new Error("Memory curator could not load conversation activity");
   const quietUntil =
     typeof data.quiet_until === "string" ? Date.parse(data.quiet_until) : 0;
   if (lease || (Number.isFinite(quietUntil) && quietUntil > now.getTime())) {
@@ -1011,10 +996,7 @@ async function conversationGate(
     // not consume the job's retry budget; release/success may retime pending
     // work earlier than a crash-recovery lease expiry.
     const retryAt = lease
-      ? Math.min(
-          Date.parse(String(lease.expires_at)),
-          now.getTime() + 60_000,
-        )
+      ? Math.min(Date.parse(String(lease.expires_at)), now.getTime() + 60_000)
       : quietUntil;
     return {
       kind: "deferred",
@@ -1090,7 +1072,7 @@ export async function handleMemoryConsolidation(
     status: "processing",
   });
 
-  // The ten-second quiet gate is conversation-wide for both scopes. A later
+  // The quiet gate is conversation-wide for both scopes. A later
   // successful turn re-arms this actor's unprocessed cursor in the scheduler;
   // this older job must not invoke a model or mark that cursor processed.
   const gate = await conversationGate(db, state, job);
@@ -1124,11 +1106,7 @@ export async function handleMemoryConsolidation(
     const sourceEpoch = payloadEpoch(job, "sourceEpoch");
     const terminalAt = payloadString(job, "terminalAt") ?? undefined;
     const terminalTurnId = payloadString(job, "turnId");
-    const appFile = await ensureMemoryFile(
-      db,
-      "user",
-      state.actor_user_id,
-    );
+    const appFile = await ensureMemoryFile(db, "user", state.actor_user_id);
     const appTranscript = buildMemoryCuratorTranscript(
       conversation.messages,
       state.actor_user_id,
@@ -1169,10 +1147,7 @@ export async function handleMemoryConsolidation(
       outcomes.user = "scope_superseded";
     }
 
-    if (
-      conversation.projectId &&
-      conversation.projectWritable
-    ) {
+    if (conversation.projectId && conversation.projectWritable) {
       const projectEpoch = payloadEpoch(job, "projectEpoch");
       const projectFile = await ensureMemoryFile(
         db,
@@ -1185,10 +1160,8 @@ export async function handleMemoryConsolidation(
         "project",
         {
           learningCutoffAt: projectFile.learning_cutoff_at,
-          terminalAt:
-            payloadString(job, "projectTerminalAt") ?? terminalAt,
-          terminalTurnId:
-            payloadString(job, "projectTurnId") ?? terminalTurnId,
+          terminalAt: payloadString(job, "projectTerminalAt") ?? terminalAt,
+          terminalTurnId: payloadString(job, "projectTurnId") ?? terminalTurnId,
         },
       );
       if (
@@ -1264,10 +1237,7 @@ export async function handleMemoryConsolidation(
         candidate.file.scope,
         candidate.ownerId,
       );
-      if (
-        !current.enabled ||
-        numeric(file.epoch) !== candidate.expectedEpoch
-      ) {
+      if (!current.enabled || numeric(file.epoch) !== candidate.expectedEpoch) {
         await recordResult({
           db,
           jobId: job.id,

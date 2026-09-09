@@ -5,10 +5,8 @@ import { redisEnabled } from "../dbq/driver";
 import { enqueueAppJobDelivery } from "../queue/appJobsQueue";
 import type { MemorySurface } from "./files";
 
-export const MEMORY_INACTIVITY_MS = envInt(
-  "MEMORY_INACTIVITY_SECONDS",
-  10,
-) * 1_000;
+export const MEMORY_INACTIVITY_MS =
+  envInt("MEMORY_INACTIVITY_SECONDS", 300) * 1_000;
 const MEMORY_INACTIVITY_SECONDS = Math.max(
   1,
   Math.min(3_600, Math.ceil(MEMORY_INACTIVITY_MS / 1_000)),

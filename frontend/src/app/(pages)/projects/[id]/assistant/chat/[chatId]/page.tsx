@@ -12,6 +12,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import {
+    Brain,
     ChevronLeft,
     ChevronRight,
     FileText,
@@ -36,10 +37,12 @@ import {
 import { useAssistantChat } from "@/app/hooks/useAssistantChat";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { UserMessage } from "@/app/components/assistant/UserMessage";
+import { VersionChip } from "@/app/components/shared/VersionChip";
 import { AssistantMessage } from "@/app/components/assistant/AssistantMessage";
 import { ChatInput } from "@/app/components/assistant/ChatInput";
 import type { ChatInputHandle } from "@/app/components/assistant/ChatInput";
 import { ProjectExplorer } from "@/app/components/projects/ProjectExplorer";
+import { ProjectMemoryModal } from "@/app/components/projects/ProjectMemoryModal";
 import { PdfView } from "@/app/components/shared/views/PdfView";
 import { SpreadsheetView } from "@/app/components/shared/views/SpreadsheetView";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
@@ -226,6 +229,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const [chatLoaded, setChatLoaded] = useState(false);
     const [creatingChat, setCreatingChat] = useState(false);
     const [deletingChat, setDeletingChat] = useState(false);
+    const [projectMemoryOpen, setProjectMemoryOpen] = useState(false);
     const [folderDeleteDialog, dispatchFolderDeleteDialog] = useReducer(
         folderDeleteDialogReducer,
         INITIAL_FOLDER_DELETE_DIALOG_STATE,
@@ -306,6 +310,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     // than a control appearing that was never theirs.
     const projectRole = roleFromLoaded(project);
     const canEditContent = can(projectRole, "content.edit");
+    const canManageProject = can(projectRole, "access.manage");
     // The chat's own creator keeps writing to it whatever their project role,
     // because the server puts a row's creator at the top of that row's ladder.
     // That exception is knowable without the project, so it still applies
@@ -1015,6 +1020,13 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                         onSelect: () => void handleRenameChat(),
                                     },
                                     {
+                                        label: "Memory",
+                                        icon: Brain,
+                                        onSelect: () =>
+                                            setProjectMemoryOpen(true),
+                                        disabled: !project,
+                                    },
+                                    {
                                         label: deletingChat
                                             ? "Deleting..."
                                             : "Delete",
@@ -1233,15 +1245,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                                             {tab.filename}
                                         </span>
                                         {showVersionBadge && (
-                                            <span
-                                                className={`shrink-0 inline-flex items-center rounded border px-1 py-px text-[9px] font-medium ${
-                                                    isActive
-                                                        ? "border-gray-200 bg-white text-gray-600"
-                                                        : "border-gray-200 bg-gray-50 text-gray-500"
-                                                }`}
-                                            >
-                                                V{versionNumber}
-                                            </span>
+                                            <VersionChip
+                                                n={versionNumber}
+                                                size="sm"
+                                            />
                                         )}
                                         <button
                                             onClick={(e) => {
@@ -1474,6 +1481,23 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     </div>
                 </div>
             </div>
+            <ProjectMemoryModal
+                key={projectId}
+                open={projectMemoryOpen}
+                onClose={() => setProjectMemoryOpen(false)}
+                projectId={projectId}
+                projectName={project?.name ?? null}
+                projectLoading={!project}
+                canEdit={canEditContent}
+                canManage={canManageProject}
+                onMemoryEnabledChange={(enabled) =>
+                    setProject((current) =>
+                        current
+                            ? { ...current, memory_enabled: enabled }
+                            : current,
+                    )
+                }
+            />
             <PermissionDeniedPopup
                 open={!!ownerOnlyAction}
                 action={ownerOnlyAction ?? undefined}

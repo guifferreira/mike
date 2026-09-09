@@ -256,7 +256,11 @@ export function TableScrollArea({
     return (
         <div
             className={cn(
-                "mx-4 mb-2 min-h-0 min-w-0 flex-1 rounded-2xl md:mx-8 md:mb-3",
+                // A narrower gutter than the page header and toolbar, because
+                // the row's own `pl-3` sits inside it: the selection checkbox
+                // is what has to line up with the header text and the tab
+                // pills, not the table's box.
+                "mx-4 mb-2 min-h-0 min-w-0 flex-1 rounded-2xl md:mx-6 md:mb-3",
                 className,
             )}
         >

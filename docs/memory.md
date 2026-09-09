@@ -27,11 +27,9 @@ of authorization, instructions, or citations.
   prevents private app context from being copied into project memory.
 - When facts conflict, the current conversation wins over project memory, and
   project memory wins over app memory.
-- Project and otherwise shared responses may use the active actor's app memory
-  for non-sensitive response preferences, but the live model is explicitly
-  forbidden from exposing a detail found only in that private app memory to
-  other people. Private-detail disclosure cases belong in the launch isolation
-  evaluation.
+- Shared-audience model calls never receive a participant's private app memory.
+  Project conversations may receive the project's shared memory only. This is
+  a data boundary rather than a prompt-only confidentiality instruction.
 
 The live model receives enabled memory in an earliest synthetic user message,
 delimited as untrusted data. A system policy states that memory cannot grant
@@ -41,8 +39,7 @@ permissions, change policy, or trigger tools by itself.
 
 Memory maintenance is deliberately outside the live response path. After a
 terminal assistant response has been saved successfully, the backend schedules
-durable curation for ten seconds after the most recent completed turn while the
-feature is being tested. Each
+durable curation for five minutes after the most recent completed turn. Each
 new completed turn restarts that quiet window for every actor with unprocessed
 work in the conversation. Superseded jobs exit before invoking a model.
 
@@ -117,8 +114,8 @@ optional accelerator—the PostgreSQL outbox and poller remain authoritative.
 
 Configuration:
 
-- `MEMORY_INACTIVITY_SECONDS` controls the quiet window and defaults to `10`
-  while memory curation is being tested.
+- `MEMORY_INACTIVITY_SECONDS` controls the quiet window and defaults to `300`.
+  Local test environments may explicitly lower it to `10` for faster feedback.
 - `MEMORY_ACTIVE_LEASE_SECONDS` bounds crash recovery for an active response
   and defaults to `1800` (values are clamped to 60–14400 seconds).
 - Users can select a memory curation model under Settings > Model Preferences.

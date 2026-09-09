@@ -190,6 +190,8 @@ export type AskInputsEvent = SharedAskInputsEvent;
 
 export type AskInputsResponseEvent = {
   type: "ask_inputs_response";
+  assistant_message_id: string;
+  ask_event_id: string;
   responses: AskInputResponseItem[];
 };
 

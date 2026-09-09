@@ -1,71 +1,29 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const { ensureMemoryFile, wipeMemoryFile } = vi.hoisted(() => ({
-  ensureMemoryFile: vi.fn(),
-  wipeMemoryFile: vi.fn(),
-}));
-
-vi.mock("./files", () => ({
-  ensureMemoryFile,
-  wipeMemoryFile,
-}));
-
+import { describe, expect, it, vi } from "vitest";
 import { deleteUserPrivateMemories } from "./bulk";
 
-function queryResult(data: unknown[]) {
-  const query: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "is", "in"]) {
-    query[method] = vi.fn(() => query);
-  }
-  query.then = (resolve: (value: unknown) => unknown) =>
-    Promise.resolve({ data, error: null }).then(resolve);
-  return query;
-}
-
 describe("deleteUserPrivateMemories", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  it("delegates the complete private-memory wipe to one database transaction", async () => {
+    const rpc = vi.fn(async () => ({ data: 2, error: null }));
+    const db = { rpc };
+
+    await expect(deleteUserPrivateMemories(db as never, "u1")).resolves.toEqual(
+      { projectMemoriesDeleted: 2 },
+    );
+    expect(rpc).toHaveBeenCalledWith("delete_user_private_memories", {
+      p_user_id: "u1",
+    });
   });
 
-  it("wipes app memory and existing memories for private projects the user created", async () => {
-    const appFile = { id: "app", enabled: true };
-    const projectFile = { id: "project-p1", enabled: false };
-    ensureMemoryFile.mockResolvedValue(appFile);
-    wipeMemoryFile.mockResolvedValue({});
-    const projectQuery = queryResult([{ id: "p1" }]);
-    const memoryQuery = queryResult([projectFile]);
+  it("fails the request when the database transaction fails", async () => {
     const db = {
-      from: vi.fn((table: string) =>
-        table === "projects" ? projectQuery : memoryQuery,
-      ),
+      rpc: vi.fn(async () => ({
+        data: null,
+        error: { message: "rolled back" },
+      })),
     };
 
-    const result = await deleteUserPrivateMemories(db as never, "u1");
-
-    expect((projectQuery.eq as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-      "user_id",
-      "u1",
+    await expect(deleteUserPrivateMemories(db as never, "u1")).rejects.toThrow(
+      "Failed to delete private memories",
     );
-    expect((projectQuery.is as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
-      "org_id",
-      null,
-    );
-    expect(ensureMemoryFile).toHaveBeenCalledWith(db, "user", "u1");
-    expect(wipeMemoryFile).toHaveBeenCalledTimes(2);
-    expect(wipeMemoryFile).toHaveBeenCalledWith({
-      db,
-      file: appFile,
-      enabled: null,
-      updatedBy: "u1",
-      source: "wipe",
-    });
-    expect(wipeMemoryFile).toHaveBeenCalledWith({
-      db,
-      file: projectFile,
-      enabled: null,
-      updatedBy: "u1",
-      source: "wipe",
-    });
-    expect(result).toEqual({ projectMemoriesDeleted: 1 });
   });
 });

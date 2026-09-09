@@ -142,14 +142,8 @@ services:
       - ./backend/migrations/20260904_01_organization_access.sql:/organization-access-migration.sql:ro
       - ./backend/migrations/20260904_02_migrate_legacy_sharing.sql:/legacy-sharing-migration.sql:ro
       - ./backend/migrations/20260905_01_scoped_memory_files.sql:/scoped-memory-migration.sql:ro
-      - ./backend/migrations/20260907_01_project_memory_default_on.sql:/project-memory-default-on-migration.sql:ro
-      - ./backend/migrations/20260907_02_memory_files_inline_content.sql:/memory-inline-content-migration.sql:ro
-      - ./backend/migrations/20260907_03_project_memory_default_preference.sql:/project-memory-default-preference-migration.sql:ro
-      - ./backend/migrations/20260907_04_drop_memory_candidate_cleanup_kind.sql:/drop-memory-candidate-kind-migration.sql:ro
-      - ./backend/migrations/20260907_05_memory_revision_rename.sql:/memory-revision-rename-migration.sql:ro
-      - ./backend/migrations/20260907_06_memory_curator_model.sql:/memory-curator-model-migration.sql:ro
-      - ./backend/migrations/20260907_07_shared_project_app_memory_boundary.sql:/shared-project-memory-boundary-migration.sql:ro
       - ./backend/migrations/20260908_01_remove_transparent_tables.sql:/remove-transparent-tables-migration.sql:ro
+      - ./backend/migrations/20260909_01_memory_safety_boundaries.sql:/memory-safety-migration.sql:ro
     entrypoint: ["bash", "-c"]
     command:
       - |
@@ -178,15 +172,11 @@ services:
         psql "$$DB" -v ON_ERROR_STOP=1 -f /workflow-assets-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /organization-access-migration.sql;
         psql "$$DB" -v ON_ERROR_STOP=1 -f /legacy-sharing-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /scoped-memory-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /project-memory-default-on-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /memory-inline-content-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /project-memory-default-preference-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /drop-memory-candidate-kind-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /memory-revision-rename-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /memory-curator-model-migration.sql;
-        psql "$$DB" -v ON_ERROR_STOP=1 -f /shared-project-memory-boundary-migration.sql;
+        if ! psql "$$DB" -tAc "select to_regclass('public.memory_files')" | grep -q memory_files; then
+          psql "$$DB" -v ON_ERROR_STOP=1 -f /scoped-memory-migration.sql;
+        fi
         psql "$$DB" -v ON_ERROR_STOP=1 -f /remove-transparent-tables-migration.sql;
+        psql "$$DB" -v ON_ERROR_STOP=1 -f /memory-safety-migration.sql;
         psql "$$DB" -c "grant usage on schema public to service_role;
           grant all privileges on all tables in schema public to service_role;
           grant all privileges on all sequences in schema public to service_role;

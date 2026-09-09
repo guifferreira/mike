@@ -176,7 +176,6 @@ import {
     deleteQuickAction,
     importWorkflowAddon,
     listQuickActions,
-    wipeProjectMemory,
 } from "./mikeApi";
 
 const fetchMock = vi.fn();
@@ -1941,12 +1940,6 @@ describe("thin endpoint wrappers", () => {
             url: "/projects/project%2F1/memory/settings",
             method: "PATCH",
             body: { enabled: false },
-        },
-        {
-            name: "wipeProjectMemory",
-            call: () => wipeProjectMemory("project/1"),
-            url: "/projects/project%2F1/memory",
-            method: "DELETE",
         },
         {
             name: "updateUserProfile",

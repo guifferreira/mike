@@ -32,6 +32,13 @@ export interface MarkdownEditorProps {
   value: string;
   onChange?: (markdown: string) => void;
   readOnly?: boolean;
+  /**
+   * Editing is paused for a moment — a confirmation is open, or a settings
+   * change is in flight. Unlike `readOnly` this is not a statement about what
+   * the reader may do, so the editor keeps its toolbar and simply dims,
+   * rather than relabelling itself "Read-only".
+   */
+  suspended?: boolean;
   ariaLabel?: string;
   className?: string;
   /**
@@ -79,17 +86,20 @@ function AppToolbarButton({
   active,
   title,
   children,
+  disabled,
 }: {
   onClick: () => void;
   active?: boolean;
   title: string;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <Button
       type="button"
       variant="ghost"
       size="icon-sm"
+      disabled={disabled}
       title={title}
       aria-label={title}
       aria-pressed={active}
@@ -116,6 +126,7 @@ export function MarkdownEditor({
   value,
   onChange,
   readOnly = false,
+  suspended = false,
   ariaLabel = "Markdown editor",
   className,
   allowTables = true,
@@ -156,7 +167,7 @@ export function MarkdownEditor({
       }),
     ],
     content: value,
-    editable: !readOnly,
+    editable: !readOnly && !suspended,
     immediatelyRender: false,
     onUpdate: ({ editor }) => {
       const md = getEditorMarkdown(editor);
@@ -208,8 +219,8 @@ export function MarkdownEditor({
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
-    editor.setEditable(!readOnly, false);
-  }, [editor, readOnly]);
+    editor.setEditable(!readOnly && !suspended, false);
+  }, [editor, readOnly, suspended]);
 
   function handleRawToggle() {
     if (!editor || editor.isDestroyed) return;
@@ -418,6 +429,7 @@ export function MarkdownEditor({
           aria-label="Markdown formatting"
         >
           <AppToolbarButton
+            disabled={suspended}
             onClick={() =>
               rawMode
                 ? applyRawHeading(1)
@@ -429,6 +441,7 @@ export function MarkdownEditor({
             <Heading1 className="h-4 w-4" />
           </AppToolbarButton>
           <AppToolbarButton
+            disabled={suspended}
             onClick={() =>
               rawMode
                 ? applyRawHeading(2)
@@ -440,6 +453,7 @@ export function MarkdownEditor({
             <Heading2 className="h-4 w-4" />
           </AppToolbarButton>
           <AppToolbarButton
+            disabled={suspended}
             onClick={() =>
               rawMode
                 ? applyRawHeading(3)
@@ -452,6 +466,7 @@ export function MarkdownEditor({
           </AppToolbarButton>
           <div aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-gray-200" />
           <AppToolbarButton
+            disabled={suspended}
             onClick={() =>
               rawMode
                 ? applyRawInline("**")
@@ -463,6 +478,7 @@ export function MarkdownEditor({
             <Bold className="h-4 w-4" />
           </AppToolbarButton>
           <AppToolbarButton
+            disabled={suspended}
             onClick={() =>
               rawMode
                 ? applyRawInline("*")
@@ -475,6 +491,7 @@ export function MarkdownEditor({
           </AppToolbarButton>
           <div aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-gray-200" />
           <AppToolbarButton
+            disabled={suspended}
             onClick={() =>
               rawMode
                 ? applyRawBulletList()
@@ -486,6 +503,7 @@ export function MarkdownEditor({
             <List className="h-4 w-4" />
           </AppToolbarButton>
           <AppToolbarButton
+            disabled={suspended}
             onClick={() =>
               rawMode
                 ? applyRawOrderedList()
@@ -511,6 +529,7 @@ export function MarkdownEditor({
                     type="button"
                     variant="ghost"
                     size="icon-sm"
+                    disabled={suspended}
                     title="Insert table"
                     aria-label="Insert table"
                     aria-pressed={tablePickerOpen}
@@ -598,6 +617,7 @@ export function MarkdownEditor({
             </span>
           ) : null}
           <AppToolbarButton
+            disabled={suspended}
             onClick={handleRawToggle}
             active={rawMode}
             title={rawMode ? "Show rich editor" : "Show raw Markdown"}
@@ -611,6 +631,7 @@ export function MarkdownEditor({
           <span className="text-xs font-medium text-gray-500">Read-only</span>
           {editor && (
             <AppToolbarButton
+              disabled={suspended}
               onClick={handleRawToggle}
               active={rawMode}
               title={rawMode ? "Show rich editor" : "Show raw Markdown"}
@@ -621,16 +642,16 @@ export function MarkdownEditor({
         </div>
       )}
       <div
-        className={`flex-1 overflow-y-auto ${
+        className={`flex-1 overflow-y-auto transition-opacity ${
           readOnly ? "border-t border-gray-100" : ""
-        }`}
+        } ${suspended ? "opacity-50" : ""}`}
       >
         {rawMode ? (
           <textarea
             ref={rawTextareaRef}
             value={rawMarkdown}
             onChange={(event) => handleRawChange(event.target.value)}
-            readOnly={readOnly}
+            readOnly={readOnly || suspended}
             spellCheck={false}
             className="h-full min-h-full w-full resize-none bg-transparent px-5 py-4 font-mono text-xs leading-6 text-gray-800 outline-none placeholder:text-gray-400 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600/40 read-only:cursor-default"
             aria-label={`${ariaLabel} (raw Markdown)`}

@@ -45,14 +45,10 @@ describe("buildMemoryTurn", () => {
     });
   });
 
-  it("injects enabled files with explicit precedence and no write capability", async () => {
-    getMemoryCurrent
-      .mockResolvedValueOnce({
-        current: { enabled: true, content: "# App\n- concise" },
-      })
-      .mockResolvedValueOnce({
-        current: { enabled: true, content: "# Project\n- Matter Alpha" },
-      });
+  it("withholds app memory from a shared project conversation", async () => {
+    getMemoryCurrent.mockResolvedValueOnce({
+      current: { enabled: true, content: "# Project\n- Matter Alpha" },
+    });
 
     const turn = await buildMemoryTurn({
       db: {} as never,
@@ -66,22 +62,23 @@ describe("buildMemoryTurn", () => {
       "current conversation over project memory",
     );
     expect(MEMORY_SYSTEM_POLICY).toContain("project memory over app memory");
-    expect(turn.message?.content).toContain('scope="app"');
+    expect(turn.message?.content).not.toContain('scope="app"');
     expect(turn.message?.content).toContain('scope="project"');
-    expect(turn.message?.content).toContain("# App");
     expect(turn.message?.content).toContain("# Project");
     expect(turn.message?.content).toContain("CONVERSATION AUDIENCE: SHARED");
     expect(MEMORY_SYSTEM_POLICY).toContain("never grants permissions");
     expect(MEMORY_SYSTEM_POLICY).toContain(
-      "never reveal, quote, summarize, or otherwise expose a detail found only in app memory",
+      "never included in a shared-audience conversation",
+    );
+    expect(getMemoryCurrent).toHaveBeenCalledTimes(1);
+    expect(getMemoryCurrent).toHaveBeenCalledWith(
+      expect.anything(),
+      "project",
+      "project-1",
     );
   });
 
-  it("appends the policy and the audience rule the caller must enforce", async () => {
-    getMemoryCurrent.mockResolvedValueOnce({
-      current: { enabled: true, content: "# App" },
-    });
-
+  it("does not load app memory for a shared standalone conversation", async () => {
     const shared = await buildMemoryTurn({
       db: {} as never,
       systemPrompt: "BASE",
@@ -90,18 +87,10 @@ describe("buildMemoryTurn", () => {
     });
 
     expect(shared.systemPrompt).toContain("BASE");
-    expect(shared.systemPrompt).toContain(MEMORY_SYSTEM_POLICY);
-    expect(shared.systemPrompt).toContain("CURRENT MEMORY AUDIENCE: SHARED");
-    expect(shared.systemPrompt).toContain(
-      "Never reveal, quote, summarize, or otherwise expose",
-    );
-    // Memory content is carried by the turn, never by the system prompt.
-    expect(shared.systemPrompt).not.toContain("# App");
-    expect(shared.message).toEqual({
-      role: "user",
-      content: expect.stringContaining("# App"),
-    });
+    expect(shared).toEqual({ message: null, systemPrompt: "BASE" });
+    expect(getMemoryCurrent).not.toHaveBeenCalled();
 
+    getMemoryCurrent.mockReset();
     getMemoryCurrent.mockResolvedValueOnce({
       current: { enabled: true, content: "# App" },
     });
@@ -113,6 +102,7 @@ describe("buildMemoryTurn", () => {
     expect(private_.systemPrompt).toContain(
       "CURRENT MEMORY AUDIENCE: PRIVATE TO THE ACTIVE USER",
     );
+    expect(private_.message?.content).toContain("# App");
   });
 
   it("leaves the prompt untouched for a surface that opts out", async () => {

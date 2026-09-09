@@ -4,8 +4,6 @@ import {
   MarkdownEditor,
   type MarkdownEditorProps,
 } from "@/app/components/ui/markdown-editor";
-import { cn } from "@/app/lib/utils";
-
 export function WorkflowPromptEditor({
   className,
   ...props

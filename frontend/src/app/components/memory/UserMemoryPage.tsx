@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { SettingsCard } from "@/app/components/settings/SettingsCard";
@@ -13,210 +13,75 @@ import {
   SettingsDescription,
   SettingsLabel,
 } from "@/app/components/settings/SettingsText";
-import { useMemoryAutosave } from "@/app/components/memory/useMemoryAutosave";
-import { MemoryUpdateFailedPopup } from "@/app/components/memory/MemoryUpdateFailedPopup";
 import {
-  MikeApiError,
+  MemoryConflictNotice,
+  MemorySaveStatus,
+  memoryActivityLabel,
+} from "@/app/components/memory/MemoryEditorState";
+import { MemoryUpdateFailedPopup } from "@/app/components/memory/MemoryUpdateFailedPopup";
+import { useMemoryFileController } from "@/app/components/memory/useMemoryFileController";
+import {
   getUserMemory,
   setUserMemoryEnabled,
   updateUserMemory,
-  type MemoryCurrent,
 } from "@/app/lib/mikeApi";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 
 type ConfirmAction = "disable";
 
-/**
- * Only states worth acting on. A quiet, up-to-date file says nothing: when it
- * was last touched is not something anyone needs to read.
- */
-function currentStatus(memory: MemoryCurrent) {
-  if (memory.status === "scheduled") return "Memory review scheduled";
-  if (memory.status === "processing") return "Updating memory…";
-  return null;
-}
-
 export function UserMemoryPage() {
-  const [memory, setMemory] = useState<MemoryCurrent | null>(null);
-  const [draft, setDraft] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [conflict, setConflict] = useState<MemoryCurrent | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [autosaveError, setAutosaveError] = useState<string | null>(null);
-  const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [settingsMutation, setSettingsMutation] = useState<
     "enable" | "disable" | null
   >(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(
     null,
   );
-  const memoryRef = useRef<MemoryCurrent | null>(null);
-  memoryRef.current = memory;
-
-  const load = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setLoadError(false);
-    try {
-      const current = await getUserMemory(signal);
-      if (signal?.aborted) return;
-      setMemory(current);
-      setDraft(current.content);
-      setConflict(null);
-      setError(null);
-      setAutosaveError(null);
-    } catch {
-      if (!signal?.aborted) {
-        setLoadError(true);
-        setLoading(false);
-      }
-      return;
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
-
-  async function resolveConflict(cause: unknown) {
-    if (
-      !(cause instanceof MikeApiError) ||
-      cause.status !== 409 ||
-      cause.code !== "memory_revision_conflict"
-    ) {
-      return false;
-    }
-    try {
-      setConflict(await getUserMemory());
-    } catch {
-      setError(
-        "Memory changed while you were editing. Reload the page before saving again.",
-      );
-    }
-    return true;
-  }
-
-  const autosave = useMemoryAutosave({
-    value: draft,
-    persistedValue: memory?.content ?? "",
-    enabled:
-      !!memory?.enabled &&
-      !loading &&
-      !loadError &&
-      !conflict &&
-      !confirmAction &&
-      !settingsMutation,
-    flushOnUnmount: !!memory?.enabled && settingsMutation === null,
-    save: async (value) => {
-      const current = memoryRef.current;
-      if (!current) throw new Error("Memory is unavailable");
-      const saved = await updateUserMemory(value, current.revision);
-      // Advance the CAS ref even during a best-effort unmount flush, when UI
-      // callbacks are intentionally skipped but a queued newer draft may run.
-      memoryRef.current = saved;
-      return saved;
-    },
-    getPersistedValue: (current) => current.content,
-    onSaved: (current, { isLatest }) => {
-      memoryRef.current = current;
-      setMemory(current);
-      // Reconcile server-normalized Markdown only if no newer keystroke has
-      // landed since this write began.
-      if (isLatest) setDraft(current.content);
-      setAutosaveError(null);
-    },
-    onError: async (cause) => {
-      if (!(await resolveConflict(cause))) {
-        setAutosaveError(
-          userFacingApiError(
-            cause,
-            "Memory could not be saved. Your draft has been kept.",
-          ),
-        );
-      }
-    },
+  const loadMemory = useCallback(
+    (signal?: AbortSignal) => getUserMemory(signal),
+    [],
+  );
+  const saveMemory = useCallback(
+    (content: string, revision: number) => updateUserMemory(content, revision),
+    [],
+  );
+  const {
+    memory,
+    draft,
+    loading,
+    loadError,
+    conflict,
+    error,
+    autosaveError,
+    dirty,
+    autosave,
+    load,
+    syncCurrent,
+    changeDraft,
+    setError,
+    setAutosaveError,
+    useLatestConflict,
+    keepDraftAfterConflict,
+  } = useMemoryFileController({
+    canEdit: true,
+    mutationBlocked: !!confirmAction || settingsMutation !== null,
+    flushOnUnmount: settingsMutation === null,
+    loadMemory,
+    saveMemory,
+    conflictLoadError:
+      "Memory changed while you were editing. Reload the page before saving again.",
+    saveError: "Memory could not be saved. Your draft has been kept.",
   });
 
-  const dirty = !!memory && draft !== memory.content;
   const interactionLocked =
     autosave.inFlight || settingsMutation !== null || confirmAction !== null;
   const editorLocked = settingsMutation !== null || confirmAction !== null;
-
-  useEffect(() => {
-    if (
-      !memory?.enabled ||
-      (memory.status !== "scheduled" && memory.status !== "processing") ||
-      dirty ||
-      conflict ||
-      interactionLocked
-    ) {
-      return;
-    }
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      void getUserMemory(controller.signal)
-        .then((current) => {
-          if (controller.signal.aborted) return;
-          memoryRef.current = current;
-          setMemory(current);
-          setDraft(current.content);
-        })
-        .catch(() => {
-          // The current file remains usable; a later page load can
-          // recover status if this non-critical refresh fails.
-        });
-    }, 3000);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [conflict, dirty, interactionLocked, memory]);
-
-  function useLatestConflict() {
-    if (!conflict) return;
-    memoryRef.current = conflict;
-    setMemory(conflict);
-    setDraft(conflict.content);
-    setConflict(null);
-    setError(null);
-    setAutosaveError(null);
-    autosave.cancelPending();
-  }
-
-  function keepDraftAfterConflict() {
-    if (!conflict) return;
-    memoryRef.current = conflict;
-    setMemory(conflict);
-    setConflict(null);
-    setError(null);
-    setAutosaveError(null);
-    autosave.retry();
-  }
-
-  function syncSettingsMutation(current: MemoryCurrent, notice: string) {
-    memoryRef.current = current;
-    setMemory(current);
-    setDraft(current.content);
-    setConflict(null);
-    setError(null);
-    setAutosaveError(null);
-    setSavedNotice(notice);
-  }
 
   async function enableMemory() {
     if (interactionLocked) return;
     setSettingsMutation("enable");
     setError(null);
-    setSavedNotice(null);
     try {
-      syncSettingsMutation(
-        await setUserMemoryEnabled(true),
-        "App-wide memory enabled",
-      );
+      syncCurrent(await setUserMemoryEnabled(true));
     } catch (cause) {
       setError(
         userFacingApiError(
@@ -233,10 +98,9 @@ export function UserMemoryPage() {
     if (!confirmAction || settingsMutation || autosave.inFlight) return;
     setSettingsMutation("disable");
     setError(null);
-    setSavedNotice(null);
     try {
       const current = await setUserMemoryEnabled(false);
-      syncSettingsMutation(current, "App-wide memory turned off and deleted");
+      syncCurrent(current);
       setConfirmAction(null);
     } catch (cause) {
       setError(
@@ -319,10 +183,6 @@ export function UserMemoryPage() {
           <p className="text-sm text-red-600" role="alert">
             {error}
           </p>
-        ) : savedNotice ? (
-          <p className="text-sm text-gray-500" role="status">
-            {savedNotice}
-          </p>
         ) : null}
       </section>
 
@@ -338,81 +198,39 @@ export function UserMemoryPage() {
               Memory file
             </SettingsHeading>
             <div className="flex flex-wrap items-center gap-3">
-              {autosaveError ? (
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-red-600" role="alert">
-                    {autosaveError}
-                  </span>
-                  <button
-                    type="button"
-                    className="font-medium text-gray-700 hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
-                    onClick={() => {
-                      setAutosaveError(null);
-                      autosave.retry();
-                    }}
-                  >
-                    Retry
-                  </button>
-                </div>
-              ) : autosave.status !== "idle" ? (
-                <span
-                  className="px-1 text-xs text-gray-500"
-                  role="status"
-                  aria-live="polite"
-                >
-                  {autosave.status === "saving" ? "Saving…" : "Saved"}
-                </span>
-              ) : null}
-              {currentStatus(memory) ? (
-                <p
-                  className="text-xs text-gray-400"
-                  role="status"
-                >
-                  {currentStatus(memory)}
+              <MemorySaveStatus
+                error={autosaveError}
+                status={autosave.status}
+                compact
+                onRetry={() => {
+                  setAutosaveError(null);
+                  autosave.retry();
+                }}
+              />
+              {memoryActivityLabel(memory) ? (
+                <p className="text-xs text-gray-400" role="status">
+                  {memoryActivityLabel(memory)}
                 </p>
               ) : null}
             </div>
           </div>
 
           {conflict ? (
-            <div
-              className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900"
-              role="alert"
-            >
-              <p className="font-medium">
-                Memory changed while you were editing
-              </p>
-              <p className="mt-1 text-xs text-amber-800">
-                Reload what is saved now, or keep your draft and let it save
-                over the change.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <PillButton tone="white" size="sm" onClick={useLatestConflict}>
-                  Reload latest
-                </PillButton>
-                <PillButton
-                  tone="black"
-                  size="sm"
-                  onClick={keepDraftAfterConflict}
-                >
-                  Keep my draft
-                </PillButton>
-              </div>
-            </div>
+            <MemoryConflictNotice
+              onReload={useLatestConflict}
+              onKeepDraft={keepDraftAfterConflict}
+            />
           ) : null}
 
           <div className="min-h-[24rem]">
             <MarkdownEditor
               value={draft}
               onChange={(value) => {
-                setDraft(value);
-                setAutosaveError(null);
-                setError(null);
-                setSavedNotice(null);
+                changeDraft(value);
               }}
               ariaLabel="App-wide memory"
               className="min-h-[24rem]"
-              readOnly={editorLocked}
+              suspended={editorLocked}
               allowTables={false}
             />
           </div>
@@ -422,7 +240,7 @@ export function UserMemoryPage() {
       <ConfirmPopup
         open={confirmAction !== null}
         title="Turn off and delete app-wide memory?"
-        message={`This permanently deletes memory.md${dirty ? " and your unsaved draft" : ""}, and cancels pending memory updates. Memory will remain off until you turn it on again. This cannot be undone.`}
+        message={`This will delete the existing app-wide memory.md file${dirty ? " and your unsaved draft" : ""}, cancel pending memory updates, and stop future memory updates until you turn app-wide memory on again.`}
         confirmLabel="Disable"
         confirmVariant="danger"
         confirmStatus={settingsMutation ? "loading" : "idle"}
@@ -470,8 +288,8 @@ function ProjectMemoryDefaultRow() {
       <div className="space-y-1">
         <SettingsLabel>Project memory for new projects</SettingsLabel>
         <SettingsDescription>
-          Projects you create start with shared memory on. Any project owner can
-          still change it for a given project.
+          Choose whether memory is enabled by default for projects you create.
+          Project owners can still change it for each project.
         </SettingsDescription>
         {error ? (
           <p className="text-xs text-red-600" role="alert">

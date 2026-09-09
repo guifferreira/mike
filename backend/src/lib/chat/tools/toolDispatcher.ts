@@ -105,7 +105,7 @@ function normalizeAskInputsEvent(
               ? "text"
               : row.kind === "multi_choice"
                 ? "multi-choice"
-              : "choice"
+                : "choice"
         }-${index + 1}`;
       const responsePrefix = cleanAskInputString(row.response_prefix);
 
@@ -184,7 +184,7 @@ function normalizeAskInputsEvent(
     .filter((item): item is AskInputItem => !!item)
     .slice(0, 12);
 
-  return { type: "ask_inputs", items };
+  return { type: "ask_inputs", event_id: crypto.randomUUID(), items };
 }
 
 function requestedCourtlistenerOpinionIds(args: Record<string, unknown>) {

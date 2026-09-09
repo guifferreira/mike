@@ -22,7 +22,6 @@ import {
     grantProjectAccess,
     listProjectChats,
     revokeProjectAccess,
-    setProjectMemoryEnabled,
     updateProject,
     type ProjectGrant,
 } from "@/app/lib/mikeApi";
@@ -316,7 +315,7 @@ export function ProjectWorkspaceProvider({
     }, [projectChats, projectId]);
 
     // The memory dialog owns its own reads and writes; this keeps the loaded
-    // project row (and the details dialog's toggle) agreeing with them.
+    // project row agreeing with them.
     const syncProjectMemoryEnabled = useCallback((enabled: boolean) => {
         setProject((current) =>
             current ? { ...current, memory_enabled: enabled } : current,
@@ -513,18 +512,6 @@ export function ProjectWorkspaceProvider({
         );
     }
 
-    async function handleProjectMemoryEnabledChange(enabled: boolean) {
-        if (!canDo("access.manage")) {
-            denyUnlessLoading({
-                action: "manage project memory",
-                requiredRole: "owner",
-            });
-            return;
-        }
-        const memory = await setProjectMemoryEnabled(projectId, enabled);
-        syncProjectMemoryEnabled(memory.enabled);
-    }
-
     function requestProjectDelete() {
         if (!canDo("container.delete")) {
             denyUnlessLoading("delete this project");
@@ -672,9 +659,6 @@ export function ProjectWorkspaceProvider({
                     canEdit={canDo("access.manage")}
                     onClose={() => setProjectDetailsOpen(false)}
                     onSave={handleProjectDetailsSave}
-                    onMemoryEnabledChange={
-                        handleProjectMemoryEnabledChange
-                    }
                     onShareProject={() => {
                         setProjectDetailsOpen(false);
                         setAccessModalOpen(true);

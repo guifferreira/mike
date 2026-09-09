@@ -773,8 +773,10 @@ export function ChatView({
                     return null;
                 }
                 if (event.type === "ask_inputs") {
+                    if (!message.id) return null;
                     return {
-                        key: `${messageIndex}-${eventIndex}`,
+                        key: `${message.id}:${event.event_id}`,
+                        assistantMessageId: message.id,
                         event,
                     };
                 }
@@ -865,6 +867,12 @@ export function ChatView({
                                                 content={msg.content ?? ""}
                                                 files={msg.files}
                                                 workflow={msg.workflow}
+                                                onWorkflowClick={(wf) => {
+                                                    setWorkflowModalInitialId(
+                                                        wf.id,
+                                                    );
+                                                    setWorkflowModalOpen(true);
+                                                }}
                                                 onFileClick={(file) => {
                                                     if (!file.document_id)
                                                         return;
@@ -1000,6 +1008,9 @@ export function ChatView({
                                 <AskInputPopup
                                     key={activeInput.key}
                                     event={activeInput.event}
+                                    assistantMessageId={
+                                        activeInput.assistantMessageId
+                                    }
                                     onSubmit={(response, content, files) => {
                                         setHiddenAskInputKeys((prev) => {
                                             const next = new Set(prev);

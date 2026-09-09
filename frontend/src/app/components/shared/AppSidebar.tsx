@@ -261,20 +261,20 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                 className={cn(
                     isOpen
                         ? "w-64 h-[calc(100dvh-1rem)] md:h-[calc(100dvh-1.5rem)]"
-                        : "max-md:hidden w-14 md:h-[calc(100dvh-1.5rem)] h-auto pointer-events-none md:pointer-events-auto",
+                        : "max-md:hidden w-[50px] md:h-[calc(100dvh-1.5rem)] h-auto pointer-events-none md:pointer-events-auto",
                     "my-2 ml-2 mr-0 md:my-3 md:ml-3 md:mr-0 rounded-2xl backdrop-blur-2xl overflow-visible",
                     LIQUID_GLASS_FLOAT_CLASS,
-                    "flex flex-col transition-all duration-300 absolute md:relative z-[99]",
+                    "absolute z-[99] flex shrink-0 flex-col transition-all duration-300 md:relative",
                 )}
             >
                 {/* Toggle + Logo */}
                 <div
-                    className={`items-center justify-between px-2.5 py-2 ${
+                    className={`items-center justify-between px-2 py-2 ${
                         !isOpen ? "hidden md:flex" : "flex"
                     }`}
                 >
                     {isOpen && (
-                        <div className="px-2">
+                        <div className="px-1.5">
                             <Link
                                 href="/assistant"
                                 className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
@@ -293,13 +293,13 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                     <button
                         onClick={handleToggle}
                         className={cn(
-                            "h-9 w-9 p-2.5 items-center flex transition-colors",
+                            "flex h-8 w-8 shrink-0 items-center p-2 transition-colors",
                             "rounded-md",
                             LIQUID_GLASS_HOVER_CLASS,
                         )}
                         title={isOpen ? "Close sidebar" : "Open sidebar"}
                     >
-                        <PanelLeft className="h-4 w-4" />
+                        <PanelLeft className="h-4 w-4 shrink-0" />
                     </button>
                 </div>
 
@@ -314,12 +314,12 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                   : pathname === href ||
                                     pathname.startsWith(href + "/");
                         return (
-                            <div key={href} className="py-0.5 px-2.5">
+                            <div key={href} className="px-2 py-0.5">
                                 <button
                                     onClick={() => router.push(href)}
                                     title={!isOpen ? label : ""}
                                     className={cn(
-                                        "w-full h-9 flex items-center gap-3 px-2.5 py-2 rounded-md transition-colors text-left",
+                                        "w-full h-9 flex items-center gap-3 px-2 py-2 rounded-md transition-colors text-left",
                                         isActive
                                             ? `${LIQUID_GLASS_SELECTED_CLASS} text-gray-900`
                                             : `text-gray-700 ${LIQUID_GLASS_HOVER_CLASS}`,
@@ -356,7 +356,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                         <div>
                             <button
                                 onClick={() => setProjectsCollapsed((v) => !v)}
-                                className={`mb-2 flex w-full items-center justify-between px-5 text-xs font-semibold text-gray-500 transition-colors hover:text-gray-700 ${
+                                className={`mb-2 flex w-full items-center justify-between px-4 text-xs font-semibold text-gray-500 transition-colors hover:text-gray-700 ${
                                     shouldAnimate ? "sidebar-fade-in" : ""
                                 }`}
                             >
@@ -376,7 +376,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                     onScroll={handleRecentProjectsScroll}
                                 >
                                     {!displayedRecentProjects ? (
-                                        <div className="space-y-1 px-2.5">
+                                        <div className="space-y-1 px-2">
                                             {[50, 65, 45].map((w, i) => (
                                                 <div
                                                     key={i}
@@ -403,7 +403,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                         </div>
                                     ) : (
                                         <div
-                                            className={`space-y-1 px-2.5 pb-1 ${
+                                            className={`space-y-1 px-2 pb-1 ${
                                                 shouldAnimate
                                                     ? "sidebar-fade-in-2"
                                                     : ""
@@ -427,7 +427,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                                             }
                                                             title={project.name}
                                                             className={cn(
-                                                                "flex h-8 w-full items-center gap-2 rounded-md px-2.5 py-1 text-left text-xs transition-colors",
+                                                                "flex h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors",
                                                                 isActive
                                                                     ? `${LIQUID_GLASS_SELECTED_CLASS} text-gray-900`
                                                                     : `text-gray-700 ${LIQUID_GLASS_HOVER_CLASS}`,
@@ -464,7 +464,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                         >
                             <button
                                 onClick={() => setHistoryCollapsed((v) => !v)}
-                                className={`mb-2 flex w-full items-center justify-between px-5 text-xs font-semibold text-gray-500 transition-colors hover:text-gray-700 ${
+                                className={`mb-2 flex w-full items-center justify-between px-4 text-xs font-semibold text-gray-500 transition-colors hover:text-gray-700 ${
                                     shouldAnimate ? "sidebar-fade-in" : ""
                                 }`}
                             >
@@ -483,7 +483,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                 onScroll={handleChatHistoryScroll}
                             >
                                 {!chats ? (
-                                    <div className="space-y-1.5 px-2.5">
+                                    <div className="space-y-1.5 px-2">
                                         {[40, 60, 50, 70, 45].map((w, i) => (
                                             <div
                                                 key={i}
@@ -510,7 +510,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                 ) : (
                                     <>
                                         <div
-                                            className={`space-y-1.5 px-2.5 ${
+                                            className={`space-y-1.5 px-2 ${
                                                 shouldAnimate
                                                     ? "sidebar-fade-in-2"
                                                     : ""
@@ -564,7 +564,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                     setIsDropdownOpen(!isDropdownOpen)
                                 }
                                 className={cn(
-                                    "flex w-full items-center rounded-xl px-2.5 py-3 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2",
+                                    "flex w-full items-center rounded-xl px-2 py-3 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2",
                                     !isOpen ? "hidden md:flex" : "",
                                     pathname.startsWith("/settings") ||
                                         pathname === "/history" ||
@@ -574,7 +574,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                 )}
                                 title={!isOpen ? user.email : undefined}
                             >
-                                <div className="h-6.5 w-6.5 flex-shrink-0 rounded-full bg-gray-700 flex items-center justify-center text-white text-sm font-medium font-serif">
+                                <div className="h-6 w-6 flex-shrink-0 rounded-full bg-gray-700 flex items-center justify-center text-white text-sm font-medium font-serif">
                                     {getUserInitials(user.email)}
                                 </div>
                                 {isOpen && (
@@ -586,10 +586,10 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                         }`}
                                     >
                                         <div className="flex flex-col gap-0.5 min-w-0">
-                                            <div className="text-sm font-medium text-gray-900 leading-none">
+                                            <div className="text-xs font-medium text-gray-900 leading-none">
                                                 {getDisplayName()}
                                             </div>
-                                            <div className="text-[12px] text-gray-500 leading-none">
+                                            <div className="text-[11px] text-gray-500 leading-none">
                                                 {getUserTier()}
                                             </div>
                                         </div>
@@ -614,7 +614,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                             setIsDropdownOpen(false);
                                         }}
                                         className={cn(
-                                            "flex w-full items-center gap-2 rounded-md px-4 py-2 text-left text-sm text-gray-700",
+                                            "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-gray-700",
                                             LIQUID_GLASS_HOVER_CLASS,
                                             pathname === "/history" &&
                                                 LIQUID_GLASS_SELECTED_CLASS,
@@ -630,7 +630,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                             setIsDropdownOpen(false);
                                         }}
                                         className={cn(
-                                            "w-full px-4 py-2 text-left text-sm text-gray-700 flex items-center gap-2 rounded-md",
+                                            "w-full px-2 py-2 text-left text-sm text-gray-700 flex items-center gap-2 rounded-md",
                                             LIQUID_GLASS_HOVER_CLASS,
                                         )}
                                     >
@@ -644,7 +644,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                             setIsDropdownOpen(false);
                                         }}
                                         className={cn(
-                                            "w-full px-4 py-2 text-left text-sm text-gray-700 flex items-center gap-2 rounded-md",
+                                            "w-full px-2 py-2 text-left text-sm text-gray-700 flex items-center gap-2 rounded-md",
                                             LIQUID_GLASS_HOVER_CLASS,
                                         )}
                                     >
@@ -664,7 +664,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                                 });
                                         }}
                                         className={cn(
-                                            "flex w-full items-center gap-2 rounded-md px-4 py-2 text-left text-sm text-gray-700",
+                                            "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-gray-700",
                                             LIQUID_GLASS_HOVER_CLASS,
                                         )}
                                     >

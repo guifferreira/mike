@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
 import type { MemoryCurrent } from "@/app/lib/mikeApi";
 
 const DISMISSAL_PREFIX = "mike:memory-update-failure-dismissed:";
+const DISMISSAL_EVENT = "mike:memory-update-failure-dismissed";
 
 function failureId(memory: MemoryCurrent | null): string | null {
   if (memory?.status !== "failed") return null;
@@ -24,38 +25,54 @@ export function MemoryUpdateFailedPopup({
   scopeKey: string;
 }) {
   const storageKey = `${DISMISSAL_PREFIX}${scopeKey}`;
-  const currentFailureId = useMemo(() => failureId(memory), [memory]);
-  const [dismissedFailureId, setDismissedFailureId] = useState<string | null>(
-    null,
+  const currentFailureId = failureId(memory);
+  const [sessionDismissedFailureId, setSessionDismissedFailureId] = useState<
+    string | null
+  >(null);
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      const onStorage = (event: StorageEvent) => {
+        if (event.key === storageKey) onStoreChange();
+      };
+      window.addEventListener("storage", onStorage);
+      window.addEventListener(DISMISSAL_EVENT, onStoreChange);
+      return () => {
+        window.removeEventListener("storage", onStorage);
+        window.removeEventListener(DISMISSAL_EVENT, onStoreChange);
+      };
+    },
+    [storageKey],
   );
-  const [dismissalLoaded, setDismissalLoaded] = useState(false);
-
-  useEffect(() => {
-    setDismissalLoaded(false);
+  const getSnapshot = useCallback(() => {
     try {
-      setDismissedFailureId(window.localStorage.getItem(storageKey));
+      return window.localStorage.getItem(storageKey);
     } catch {
-      setDismissedFailureId(null);
+      return null;
     }
-    setDismissalLoaded(true);
   }, [storageKey]);
+  const persistedDismissedFailureId = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    () => null,
+  );
 
   function dismiss() {
     if (!currentFailureId) return;
     try {
       window.localStorage.setItem(storageKey, currentFailureId);
+      window.dispatchEvent(new Event(DISMISSAL_EVENT));
     } catch {
       // Component state still dismisses the popup for this page visit.
     }
-    setDismissedFailureId(currentFailureId);
+    setSessionDismissedFailureId(currentFailureId);
   }
 
   return (
     <WarningPopup
       open={
-        dismissalLoaded &&
         currentFailureId !== null &&
-        currentFailureId !== dismissedFailureId
+        currentFailureId !== persistedDismissedFailureId &&
+        currentFailureId !== sessionDismissedFailureId
       }
       onClose={dismiss}
       message={

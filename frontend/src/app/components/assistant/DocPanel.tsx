@@ -17,6 +17,7 @@ import { EditCard } from "./EditCard";
 import { expandDocumentQuoteEntry } from "../shared/types";
 import type { Citation, EditAnnotation, PanelDocument } from "../shared/types";
 import { quoteVerificationState } from "./message/citationVerification";
+import { VersionChip } from "@/app/components/shared/VersionChip";
 import { FileTypeIcon } from "../shared/FileTypeIcon";
 import { CaseView } from "./CaseView";
 import { useResolvedPanelDocument } from "./useResolvedPanelDocument";
@@ -288,7 +289,9 @@ export function DocumentTitleRow({
 
     return (
         <div className="px-3 py-2">
-            <div className="flex items-start gap-3">
+            {/* Centred against the actions: they are taller than the title,
+                so top-aligning left the title floating above them. */}
+            <div className="flex items-center gap-3">
                 <div className="flex min-w-0 flex-1 items-start gap-2">
                     <span className="mt-0.5 shrink-0">
                         {document.type === "case" ||
@@ -319,11 +322,7 @@ export function DocumentTitleRow({
                         >
                             {document.title}
                         </h2>
-                        {versionNumber && versionNumber > 0 ? (
-                            <span className="inline-flex shrink-0 items-center rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
-                                V{versionNumber}
-                            </span>
-                        ) : null}
+                        <VersionChip n={versionNumber} />
                     </div>
                 </div>
                 <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2">

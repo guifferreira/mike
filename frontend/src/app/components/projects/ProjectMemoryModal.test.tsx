@@ -12,7 +12,6 @@ import {
   getProjectMemory,
   setProjectMemoryEnabled,
   updateProjectMemory,
-  wipeProjectMemory,
 } from "@/app/lib/mikeApi";
 import { ProjectMemoryModal } from "./ProjectMemoryModal";
 
@@ -21,17 +20,19 @@ vi.mock("@/app/components/ui/markdown-editor", () => ({
     value,
     onChange,
     readOnly,
+    suspended,
     ariaLabel,
   }: {
     value: string;
     onChange?: (value: string) => void;
     readOnly?: boolean;
+    suspended?: boolean;
     ariaLabel?: string;
   }) => (
     <textarea
       aria-label={ariaLabel}
       value={value}
-      readOnly={readOnly}
+      readOnly={readOnly || suspended}
       onChange={(event) => onChange?.(event.target.value)}
     />
   ),
@@ -42,7 +43,6 @@ vi.mock("@/app/lib/mikeApi", async (importOriginal) => ({
   getProjectMemory: vi.fn(),
   setProjectMemoryEnabled: vi.fn(),
   updateProjectMemory: vi.fn(),
-  wipeProjectMemory: vi.fn(),
 }));
 
 const CURRENT = {
@@ -127,18 +127,25 @@ describe("ProjectMemoryModal", () => {
     expect(editor.parentElement).toHaveClass("min-h-0", "flex-1");
     expect(editor).toHaveValue("# Matter facts");
     expect(editor).toHaveAttribute("readonly");
+    expect(
+      screen.getByText(
+        "Consists of shared project context curated from chats in this project.",
+      ),
+    ).toBeVisible();
     expect(screen.queryByRole("button", { name: /Save/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Delete/ })).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "Download project memory.md" }),
+      screen.queryByRole("button", {
+        name: "Download project memory.md",
+      }),
     ).toBeNull();
     expect(screen.getByRole("dialog", { name: "Project Memory" })).toHaveClass(
       "max-w-2xl",
       "h-[min(600px,calc(100vh-2rem))]",
     );
-    expect(screen.getByRole("dialog", { name: "Project Memory" })).not.toHaveClass(
-      "max-w-4xl",
-    );
+    expect(
+      screen.getByRole("dialog", { name: "Project Memory" }),
+    ).not.toHaveClass("max-w-4xl");
   });
 
   it("shows a failed update only inside project memory and remembers dismissal", async () => {
@@ -236,7 +243,7 @@ describe("ProjectMemoryModal", () => {
     fireEvent.change(editor, {
       target: { value: "# Matter facts and more" },
     });
-    await user.click(screen.getByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
 
     await waitFor(
       () =>
@@ -256,7 +263,7 @@ describe("ProjectMemoryModal", () => {
     const { onClose } = renderModal({ canEdit: true });
 
     await screen.findByRole("textbox", { name: "Project memory" });
-    await user.click(screen.getByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
 
     expect(onClose).toHaveBeenCalled();
     expect(screen.queryByText("Discard unsaved memory edits?")).toBeNull();
@@ -346,7 +353,7 @@ describe("ProjectMemoryModal", () => {
     );
   });
 
-  it("only enables disabled memory for a project owner", async () => {
+  it("lets a project owner enable memory from the memory modal", async () => {
     const off = {
       ...CURRENT,
       enabled: false,
@@ -367,7 +374,9 @@ describe("ProjectMemoryModal", () => {
       canManage: true,
     });
 
-    await user.click(await screen.findByRole("button", { name: "Enable" }));
+    await user.click(
+      await screen.findByRole("switch", { name: "Enable project memory" }),
+    );
 
     await waitFor(() =>
       expect(setProjectMemoryEnabled).toHaveBeenCalledWith("project-1", true),
@@ -376,7 +385,7 @@ describe("ProjectMemoryModal", () => {
     expect(onMemoryEnabledChange).toHaveBeenLastCalledWith(true);
   });
 
-  it("hides the enable action from members who cannot manage access", async () => {
+  it("keeps the memory setting read-only for members who cannot manage access", async () => {
     vi.mocked(getProjectMemory).mockResolvedValue({
       ...CURRENT,
       enabled: false,
@@ -390,57 +399,68 @@ describe("ProjectMemoryModal", () => {
     renderModal({ canEdit: true });
 
     expect(await screen.findByText("Project memory is off")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
+    expect(
+      screen.getByRole("switch", { name: "Enable project memory" }),
+    ).toBeDisabled();
   });
 
-  it("requires confirmation before an owner deletes memory", async () => {
-    vi.mocked(wipeProjectMemory).mockResolvedValue({
+  it("requires confirmation before an owner disables project memory", async () => {
+    vi.mocked(setProjectMemoryEnabled).mockResolvedValue({
       ...CURRENT,
+      enabled: false,
       content: "",
-      // Wipes clear the head while preserving a monotonic CAS token.
       revision: 3,
       hash: null,
       updated_at: null,
       updated_by: null,
     });
     const user = userEvent.setup();
+    const { onMemoryEnabledChange } = renderModal({
+      canEdit: true,
+      canManage: true,
+    });
+
+    const memorySwitch = await screen.findByRole("switch", {
+      name: "Enable project memory",
+    });
+    expect(memorySwitch).toBeChecked();
+
+    await user.click(memorySwitch);
+
+    expect(setProjectMemoryEnabled).not.toHaveBeenCalled();
+    expect(screen.getByText("Turn off project memory?")).toBeVisible();
+    expect(
+      screen.getByText(/delete the existing project memory\.md file/),
+    ).toBeVisible();
+    expect(screen.getByText(/cancel pending memory updates/)).toBeVisible();
+    expect(screen.getByText(/stop future memory updates/)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Disable" }));
+
+    await waitFor(() =>
+      expect(setProjectMemoryEnabled).toHaveBeenCalledWith("project-1", false),
+    );
+    expect(memorySwitch).not.toBeChecked();
+    expect(onMemoryEnabledChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("clears project memory through the normal autosave path", async () => {
+    const user = userEvent.setup();
     renderModal({ canEdit: true, canManage: true });
 
-    await user.click(
-      await screen.findByRole("button", { name: "Delete project memory" }),
-    );
-    expect(wipeProjectMemory).not.toHaveBeenCalled();
-    expect(screen.getByText("Delete project memory?")).toBeVisible();
-
-    await user.click(screen.getAllByRole("button", { name: /Delete/ }).at(-1)!);
-    await waitFor(() =>
-      expect(wipeProjectMemory).toHaveBeenCalledWith("project-1"),
-    );
-    expect(await screen.findByText("Project memory deleted")).toBeVisible();
+    const editor = await screen.findByRole("textbox", {
+      name: "Project memory",
+    });
     expect(
       screen.queryByRole("button", { name: "Delete project memory" }),
     ).toBeNull();
-    expect(screen.queryByText("Version 3")).toBeNull();
-  });
 
-  it("lets an owner delete a pending first memory update", async () => {
-    vi.mocked(getProjectMemory).mockResolvedValue({
-      ...CURRENT,
-      content: "",
-      revision: 0,
-      hash: null,
-      updated_at: null,
-      updated_by: null,
-      status: "scheduled",
-    });
-
-    renderModal({ canEdit: true, canManage: true });
-
-    expect(
-      await screen.findByRole("button", {
-        name: "Delete project memory",
-      }),
-    ).toBeVisible();
+    await user.clear(editor);
+    await waitFor(
+      () =>
+        expect(updateProjectMemory).toHaveBeenCalledWith("project-1", "", 2),
+      { timeout: 2000 },
+    );
   });
 
   it("polls until a scheduled project-memory update is visible", async () => {

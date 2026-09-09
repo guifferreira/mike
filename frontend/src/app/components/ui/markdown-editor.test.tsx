@@ -106,6 +106,29 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("dims a suspended editor instead of calling it read-only", () => {
+    const { container } = render(
+      <MarkdownEditor value="Prompt" ariaLabel="Memory document" suspended />,
+    );
+
+    // A pending confirmation says nothing about the reader's rights, so the
+    // toolbar stays put and the "Read-only" bar never appears.
+    expect(
+      screen.getByRole("toolbar", { name: "Markdown formatting" }),
+    ).toBeVisible();
+    expect(screen.queryByText("Read-only")).toBeNull();
+
+    expect(screen.getByRole("button", { name: "Heading 1" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Insert table" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Show raw Markdown" }),
+    ).toBeDisabled();
+    expect(mocks.editor.setEditable).toHaveBeenLastCalledWith(false, false);
+    expect(
+      container.querySelector(".flex-1.overflow-y-auto"),
+    ).toHaveClass("opacity-50");
+  });
+
   it("withholds the table control when tables are not allowed", () => {
     render(
       <MarkdownEditor

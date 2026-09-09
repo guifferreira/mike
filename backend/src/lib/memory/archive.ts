@@ -1,4 +1,5 @@
 import { checkProjectAccess, listAccessibleProjectIds } from "../access";
+import { chunkArray } from "../arrays";
 import type { Db } from "../dbq/types";
 import { getMemoryCurrent } from "./files";
 
@@ -9,14 +10,6 @@ type ProjectLabel = {
   name: string | null;
 };
 
-function chunks<T>(values: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let index = 0; index < values.length; index += size) {
-    out.push(values.slice(index, index + size));
-  }
-  return out;
-}
-
 function archiveSegment(value: string): string {
   const normalized = value
     .normalize("NFKC")
@@ -25,7 +18,9 @@ function archiveSegment(value: string): string {
     .replace(/\.{2,}/g, "-")
     .trim()
     .replace(/[. ]+$/g, "");
-  return Array.from(normalized || "project").slice(0, 80).join("");
+  return Array.from(normalized || "project")
+    .slice(0, 80)
+    .join("");
 }
 
 async function loadProjectLabels(
@@ -33,7 +28,7 @@ async function loadProjectLabels(
   projectIds: string[],
 ): Promise<ProjectLabel[]> {
   const projects: ProjectLabel[] = [];
-  for (const batch of chunks(projectIds, PROJECT_BATCH_SIZE)) {
+  for (const batch of chunkArray(projectIds, PROJECT_BATCH_SIZE)) {
     const { data, error } = await db
       .from("projects")
       .select("id, name")
@@ -65,12 +60,7 @@ export async function buildMemoryArchive(
   for (const project of projects) {
     // Access can change while an export waits in the durable queue. Re-check
     // immediately before reading each shared file and omit revoked projects.
-    const access = await checkProjectAccess(
-      project.id,
-      userId,
-      userEmail,
-      db,
-    );
+    const access = await checkProjectAccess(project.id, userId, userEmail, db);
     if (!access.ok) continue;
     const memory = await getMemoryCurrent(db, "project", project.id);
     const safeId = project.id.replace(/[^a-zA-Z0-9-]/g, "") || "project";

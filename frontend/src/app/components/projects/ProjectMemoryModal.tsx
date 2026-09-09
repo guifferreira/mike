@@ -1,35 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Brain, Trash2 } from "lucide-react";
-import { useMemoryAutosave } from "@/app/components/memory/useMemoryAutosave";
+import { useCallback, useEffect, useState } from "react";
+import { Brain } from "lucide-react";
+import {
+    MemoryConflictNotice,
+    MemorySaveStatus,
+    memoryActivityLabel,
+} from "@/app/components/memory/MemoryEditorState";
 import { MemoryUpdateFailedPopup } from "@/app/components/memory/MemoryUpdateFailedPopup";
+import { useMemoryFileController } from "@/app/components/memory/useMemoryFileController";
 import { Modal } from "@/app/components/modals/Modal";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { EmptyState } from "@/app/components/ui/empty-state";
+import { FieldLabel } from "@/app/components/ui/form-field";
 import { GlassCard } from "@/app/components/ui/glass-card";
 import { MarkdownEditor } from "@/app/components/ui/markdown-editor";
 import { PillButton } from "@/app/components/ui/pill-button";
-import { TabPillButton } from "@/app/components/ui/tab-pill-button";
+import { ToggleSwitch } from "@/app/components/ui/toggle-switch";
 import {
-    MikeApiError,
     getProjectMemory,
     setProjectMemoryEnabled,
     updateProjectMemory,
-    wipeProjectMemory,
-    type MemoryCurrent,
 } from "@/app/lib/mikeApi";
 import { userFacingApiError } from "@/app/lib/userFacingError";
-
-/**
- * Only states worth acting on. A quiet, up-to-date file says nothing: when it
- * was last touched is not something anyone needs to read.
- */
-function currentStatus(memory: MemoryCurrent) {
-    if (memory.status === "scheduled") return "Memory review scheduled";
-    if (memory.status === "processing") return "Updating memory…";
-    return null;
-}
 
 export function ProjectMemoryModal({
     open,
@@ -50,279 +43,115 @@ export function ProjectMemoryModal({
     canEdit: boolean;
     /** Caller holds `access.manage` on this project. */
     canManage: boolean;
-    /**
-     * Report the file's enabled flag back to the workspace so the project row
-     * and its details dialog agree with what this dialog just did.
-     */
+    /** Report the file's enabled flag back to the surface that opened it. */
     onMemoryEnabledChange?: (enabled: boolean) => void;
 }) {
-    const [memory, setMemory] = useState<MemoryCurrent | null>(null);
-    const [draft, setDraft] = useState("");
-    const [loading, setLoading] = useState(true);
-    const [loadError, setLoadError] = useState(false);
-    const [enabling, setEnabling] = useState(false);
-    const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
-    const [wiping, setWiping] = useState(false);
+    const [settingsMutation, setSettingsMutation] = useState<
+        "enable" | "disable" | null
+    >(null);
+    const [disableMemoryConfirmOpen, setDisableMemoryConfirmOpen] =
+        useState(false);
     const [closing, setClosing] = useState(false);
     const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
-    const [conflict, setConflict] = useState<MemoryCurrent | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const [autosaveError, setAutosaveError] = useState<string | null>(null);
     const [savedNotice, setSavedNotice] = useState<string | null>(null);
-    const memoryRef = useRef<MemoryCurrent | null>(null);
-    const draftRef = useRef(draft);
-    memoryRef.current = memory;
-    draftRef.current = draft;
-
-    const syncCurrent = useCallback(
-        (current: MemoryCurrent, syncDraft = true) => {
-            memoryRef.current = current;
-            setMemory(current);
-            if (syncDraft) {
-                draftRef.current = current.content;
-                setDraft(current.content);
-            }
+    const loadMemory = useCallback(
+        (signal?: AbortSignal) => getProjectMemory(projectId, signal),
+        [projectId],
+    );
+    const saveMemory = useCallback(
+        (content: string, revision: number) =>
+            updateProjectMemory(projectId, content, revision),
+        [projectId],
+    );
+    const handleCurrentChange = useCallback(
+        (current: Awaited<ReturnType<typeof getProjectMemory>>) => {
             onMemoryEnabledChange?.(current.enabled);
         },
         [onMemoryEnabledChange],
     );
-
-    const load = useCallback(
-        async (signal?: AbortSignal) => {
-            setLoading(true);
-            setLoadError(false);
-            try {
-                const current = await getProjectMemory(projectId, signal);
-                if (signal?.aborted) return;
-                syncCurrent(current);
-                setConflict(null);
-                setError(null);
-                setAutosaveError(null);
-            } catch {
-                if (!signal?.aborted) {
-                    setLoadError(true);
-                    setLoading(false);
-                }
-                return;
-            } finally {
-                if (!signal?.aborted) setLoading(false);
-            }
-        },
-        [projectId, syncCurrent],
-    );
-
-    // The file is fetched when the dialog opens, not when the project page
-    // mounts: most visits to a project never ask for its memory. Closing drops
-    // what was read so a later open shows its skeleton rather than a stale file.
-    useEffect(() => {
-        if (!open) {
-            setMemory(null);
-            draftRef.current = "";
-            setDraft("");
-            setLoading(true);
-            setConflict(null);
-            setError(null);
-            setAutosaveError(null);
-            setSavedNotice(null);
-            setClosing(false);
-            setWipeConfirmOpen(false);
-            setDiscardConfirmOpen(false);
-            return;
-        }
-        const controller = new AbortController();
-        void load(controller.signal);
-        return () => controller.abort();
-    }, [load, open]);
-
-    const dirty = !!memory && draft !== memory.content;
-
-    useEffect(() => {
-        if (
-            !open ||
-            !memory?.enabled ||
-            (memory.status !== "scheduled" && memory.status !== "processing") ||
-            dirty ||
-            conflict
-        ) {
-            return;
-        }
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => {
-            void getProjectMemory(projectId, controller.signal)
-                .then((current) => {
-                    if (controller.signal.aborted) return;
-                    syncCurrent(current);
-                })
-                .catch(() => {
-                    // Keep the current file usable; the next poll or reopen can
-                    // recover a transient status-refresh failure.
-                });
-        }, 3000);
-        return () => {
-            window.clearTimeout(timer);
-            controller.abort();
-        };
-    }, [conflict, dirty, memory, open, projectId, syncCurrent]);
-
-    async function resolveConflict(cause: unknown) {
-        if (
-            !(cause instanceof MikeApiError) ||
-            cause.status !== 409 ||
-            cause.code !== "memory_revision_conflict"
-        ) {
-            return false;
-        }
-        try {
-            const latest = await getProjectMemory(projectId);
-            setConflict(latest);
-            onMemoryEnabledChange?.(latest.enabled);
-        } catch {
-            setError(
-                "Project memory changed while you were editing. Reopen memory before saving again.",
-            );
-        }
-        return true;
-    }
-
-    const autosave = useMemoryAutosave({
-        value: draft,
-        persistedValue: memory?.content ?? "",
-        enabled:
-            open &&
-            canEdit &&
-            !!memory?.enabled &&
-            !loading &&
-            !loadError &&
-            !enabling &&
-            !wiping &&
-            !wipeConfirmOpen &&
-            !discardConfirmOpen &&
-            !conflict,
-        flushOnUnmount: open && canEdit && !!memory?.enabled && !wiping,
-        save: async (value) => {
-            const current = memoryRef.current;
-            if (!current) throw new Error("Project memory is unavailable");
-            const saved = await updateProjectMemory(
-                projectId,
-                value,
-                current.revision,
-            );
-            memoryRef.current = saved;
-            return saved;
-        },
-        getPersistedValue: (current) => current.content,
-        onSaved: (current, { isLatest }) => {
-            // Reconcile server-normalized Markdown only if no newer keystroke has
-            // landed since this write began.
-            syncCurrent(current, isLatest);
-            setAutosaveError(null);
-        },
-        onError: async (cause) => {
-            if (!(await resolveConflict(cause))) {
-                setAutosaveError(
-                    userFacingApiError(
-                        cause,
-                        "Project memory could not be saved. Your draft has been kept.",
-                    ),
-                );
-            }
-        },
+    const {
+        memory,
+        draft,
+        loading,
+        loadError,
+        conflict,
+        error,
+        autosaveError,
+        dirty,
+        autosave,
+        load,
+        syncCurrent,
+        changeDraft,
+        setError,
+        setAutosaveError,
+        useLatestConflict,
+        keepDraftAfterConflict,
+    } = useMemoryFileController({
+        active: open,
+        canEdit,
+        mutationBlocked:
+            settingsMutation !== null ||
+            disableMemoryConfirmOpen ||
+            discardConfirmOpen,
+        pollBlocked: closing,
+        flushOnUnmount: open && canEdit && settingsMutation === null,
+        loadMemory,
+        saveMemory,
+        conflictLoadError:
+            "Project memory changed while you were editing. Reopen memory before saving again.",
+        saveError:
+            "Project memory could not be saved. Your draft has been kept.",
+        onCurrentChange: handleCurrentChange,
     });
 
-    async function enableMemory() {
-        if (!canManage || enabling || closing) return;
-        setEnabling(true);
-        setError(null);
-        setAutosaveError(null);
-        try {
-            const current = await setProjectMemoryEnabled(projectId, true);
-            syncCurrent(current);
-            setSavedNotice("Project memory enabled");
-        } catch (cause) {
-            setError(
-                userFacingApiError(
-                    cause,
-                    "Project memory could not be enabled. Please try again.",
-                ),
-            );
-        } finally {
-            setEnabling(false);
+    useEffect(() => {
+        if (!open) {
+            setSavedNotice(null);
+            setClosing(false);
+            setSettingsMutation(null);
+            setDisableMemoryConfirmOpen(false);
+            setDiscardConfirmOpen(false);
         }
-    }
+    }, [open]);
 
-    async function wipeMemory() {
-        if (
-            !memory ||
-            !canManage ||
-            wiping ||
-            autosave.inFlight ||
-            discardConfirmOpen ||
-            closing
-        ) {
+    async function persistMemoryEnabled(enabled: boolean) {
+        if (!canManage || settingsMutation || closing || autosave.inFlight)
             return;
-        }
-        setWiping(true);
+        setSettingsMutation(enabled ? "enable" : "disable");
         setError(null);
         setAutosaveError(null);
-        setSavedNotice(null);
         try {
-            const current = await wipeProjectMemory(projectId);
+            const current = await setProjectMemoryEnabled(projectId, enabled);
             syncCurrent(current);
-            setConflict(null);
-            setWipeConfirmOpen(false);
-            setSavedNotice("Project memory deleted");
+            setDisableMemoryConfirmOpen(false);
+            setSavedNotice(enabled ? "Project memory enabled" : null);
         } catch (cause) {
             setError(
                 userFacingApiError(
                     cause,
-                    "Project memory could not be deleted. Please try again.",
+                    enabled
+                        ? "Project memory could not be enabled. Please try again."
+                        : "Project memory could not be disabled. Please try again.",
                 ),
             );
+            setDisableMemoryConfirmOpen(false);
         } finally {
-            setWiping(false);
+            setSettingsMutation(null);
         }
     }
-
-    function useLatestConflict() {
-        if (!conflict) return;
-        syncCurrent(conflict);
-        setConflict(null);
-        setError(null);
-        setAutosaveError(null);
-        autosave.cancelPending();
-    }
-
-    function keepDraftAfterConflict() {
-        if (!conflict) return;
-        syncCurrent(conflict, false);
-        setConflict(null);
-        setError(null);
-        setAutosaveError(null);
-        autosave.retry();
-    }
-
-    const modalInteractionLocked =
-        autosave.inFlight ||
-        enabling ||
-        wiping ||
-        closing ||
-        wipeConfirmOpen ||
-        discardConfirmOpen;
 
     async function requestClose() {
-        if (wipeConfirmOpen && !wiping) {
-            setWipeConfirmOpen(false);
+        if (disableMemoryConfirmOpen) {
+            if (!settingsMutation) setDisableMemoryConfirmOpen(false);
             return;
         }
         if (discardConfirmOpen) {
             setDiscardConfirmOpen(false);
             return;
         }
-        if (closing || wiping) return;
-        const current = memoryRef.current;
-        const hasDirtyDraft = !!current && draftRef.current !== current.content;
-        const canSaveCurrent = canEdit && !!current?.enabled && !loadError;
-        if (!hasDirtyDraft || !canSaveCurrent) {
+        if (closing || settingsMutation) return;
+        const canSaveCurrent = canEdit && !!memory?.enabled && !loadError;
+        if (!dirty || !canSaveCurrent) {
             onClose();
             return;
         }
@@ -353,36 +182,10 @@ export function ProjectMemoryModal({
                 "Project Memory",
             ]}
             headerAction={
-                memory?.enabled ? (
-                    <div className="flex items-center gap-3">
-                        {canManage &&
-                        (memory.hash !== null || memory.status !== "idle") ? (
-                            <TabPillButton
-                                className="text-red-600 hover:text-red-700"
-                                onClick={() => {
-                                    autosave.cancelPending();
-                                    setWipeConfirmOpen(true);
-                                }}
-                                disabled={modalInteractionLocked}
-                                aria-label="Delete project memory"
-                                title="Delete project memory"
-                            >
-                                <Trash2
-                                    aria-hidden="true"
-                                    className="h-3.5 w-3.5"
-                                />
-                                <span className="hidden sm:inline">Delete</span>
-                            </TabPillButton>
-                        ) : null}
-                        {currentStatus(memory) ? (
-                            <p
-                                className="text-xs text-gray-400"
-                                role="status"
-                            >
-                                {currentStatus(memory)}
-                            </p>
-                        ) : null}
-                    </div>
+                memory?.enabled && memoryActivityLabel(memory) ? (
+                    <p className="text-xs text-gray-400" role="status">
+                        {memoryActivityLabel(memory)}
+                    </p>
                 ) : undefined
             }
             footerStatus={
@@ -390,36 +193,28 @@ export function ProjectMemoryModal({
                     <span className="text-sm text-red-600" role="alert">
                         {error}
                     </span>
-                ) : autosaveError ? (
-                    <span className="inline-flex items-center gap-2 text-sm">
-                        <span className="text-red-600" role="alert">
-                            {autosaveError}
-                        </span>
-                        <button
-                            type="button"
-                            className="font-medium text-gray-700 hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
-                            onClick={() => {
-                                setAutosaveError(null);
-                                autosave.retry();
-                            }}
-                        >
-                            Retry
-                        </button>
-                    </span>
-                ) : autosave.status !== "idle" ? (
-                    <span
-                        className="text-xs text-gray-500"
-                        role="status"
-                        aria-live="polite"
-                    >
-                        {autosave.status === "saving" ? "Saving…" : "Saved"}
-                    </span>
+                ) : autosaveError || autosave.status !== "idle" ? (
+                    <MemorySaveStatus
+                        error={autosaveError}
+                        status={autosave.status}
+                        onRetry={() => {
+                            setAutosaveError(null);
+                            autosave.retry();
+                        }}
+                    />
                 ) : savedNotice ? (
                     <span className="text-sm text-gray-400" role="status">
                         {savedNotice}
                     </span>
                 ) : null
             }
+            primaryAction={{
+                label: "Done",
+                type: "button",
+                onClick: () => void requestClose(),
+                disabled: closing || settingsMutation !== null,
+                "aria-busy": closing,
+            }}
         >
             <div className="flex min-h-0 flex-1 flex-col gap-3 pb-3 pt-1">
                 {loading || projectLoading ? (
@@ -443,112 +238,109 @@ export function ProjectMemoryModal({
                             }
                         />
                     </GlassCard>
-                ) : !memory.enabled ? (
-                    <GlassCard>
-                        <EmptyState
-                            icon={<Brain />}
-                            title="Project memory is off"
-                            description={
-                                canManage
-                                    ? "Enable it to start a new shared project memory.md for future conversations."
-                                    : "A project owner can enable memory for future project conversations."
-                            }
-                            className="px-5 py-8"
-                            action={
-                                canManage ? (
-                                    <PillButton
-                                        tone="black"
-                                        size="sm"
-                                        onClick={() => void enableMemory()}
-                                        disabled={enabling}
-                                        aria-busy={enabling}
-                                    >
-                                        {enabling ? "Enabling…" : "Enable"}
-                                    </PillButton>
-                                ) : undefined
-                            }
-                        />
-                    </GlassCard>
                 ) : (
                     <>
-                        <p className="text-sm text-gray-500">
-                            Details about this project gathered from past chats.
-                        </p>
-
-                        {conflict ? (
-                            <div
-                                className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900"
-                                role="alert"
-                            >
-                                <p className="font-medium">
-                                    Project memory changed while you were
-                                    editing
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <FieldLabel as="p">Project memory</FieldLabel>
+                                <p className="text-sm text-gray-500">
+                                    Consists of shared project context curated
+                                    from chats in this project.
                                 </p>
-                                <p className="mt-1 text-xs text-amber-800">
-                                    Reload what is saved now, or keep your draft
-                                    and let it save over the change.
-                                </p>
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                    <PillButton
-                                        tone="white"
-                                        size="sm"
-                                        onClick={useLatestConflict}
-                                    >
-                                        Reload latest
-                                    </PillButton>
-                                    <PillButton
-                                        tone="black"
-                                        size="sm"
-                                        onClick={keepDraftAfterConflict}
-                                    >
-                                        Keep my draft
-                                    </PillButton>
-                                </div>
                             </div>
-                        ) : null}
-
-                        <div className="min-h-0 flex-1">
-                            <MarkdownEditor
-                                value={draft}
-                                onChange={
-                                    canEdit
-                                        ? (value) => {
-                                              draftRef.current = value;
-                                              setDraft(value);
-                                              setAutosaveError(null);
-                                              setError(null);
-                                              setSavedNotice(null);
-                                          }
-                                        : undefined
-                                }
-                                readOnly={
-                                    !canEdit ||
-                                    enabling ||
-                                    wiping ||
+                            <ToggleSwitch
+                                checked={memory.enabled}
+                                onCheckedChange={(enabled) => {
+                                    setSavedNotice(null);
+                                    if (enabled)
+                                        void persistMemoryEnabled(true);
+                                    else {
+                                        autosave.cancelPending();
+                                        setDisableMemoryConfirmOpen(true);
+                                    }
+                                }}
+                                disabled={
+                                    !canManage ||
                                     closing ||
-                                    wipeConfirmOpen ||
+                                    autosave.inFlight ||
+                                    settingsMutation !== null ||
+                                    disableMemoryConfirmOpen ||
                                     discardConfirmOpen
                                 }
-                                ariaLabel="Project memory"
-                                className="h-full"
-                                allowTables={false}
+                                aria-label="Enable project memory"
+                                aria-busy={settingsMutation !== null}
                             />
                         </div>
+
+                        {!memory.enabled ? (
+                            <GlassCard>
+                                <EmptyState
+                                    icon={<Brain />}
+                                    title="Project memory is off"
+                                    description={
+                                        canManage
+                                            ? "Turn it on to start a new shared project memory.md for future conversations."
+                                            : "A project owner can enable memory for future project conversations."
+                                    }
+                                    className="px-5 py-8"
+                                />
+                            </GlassCard>
+                        ) : (
+                            <>
+                                {conflict ? (
+                                    <MemoryConflictNotice
+                                        project
+                                        onReload={useLatestConflict}
+                                        onKeepDraft={keepDraftAfterConflict}
+                                    />
+                                ) : null}
+
+                                <div className="min-h-0 flex-1">
+                                    <MarkdownEditor
+                                        value={draft}
+                                        onChange={
+                                            canEdit
+                                                ? (value) => {
+                                                      changeDraft(value);
+                                                      setSavedNotice(null);
+                                                  }
+                                                : undefined
+                                        }
+                                        readOnly={!canEdit}
+                                        // A confirmation or a settings write
+                                        // pauses editing; it does not make the
+                                        // file read-only, so the editor dims
+                                        // instead of relabelling itself.
+                                        suspended={
+                                            settingsMutation !== null ||
+                                            closing ||
+                                            disableMemoryConfirmOpen ||
+                                            discardConfirmOpen
+                                        }
+                                        ariaLabel="Project memory"
+                                        className="h-full"
+                                        allowTables={false}
+                                    />
+                                </div>
+                            </>
+                        )}
                     </>
                 )}
             </div>
 
             <ConfirmPopup
-                open={wipeConfirmOpen}
-                title="Delete project memory?"
-                message={`This permanently deletes memory.md${dirty ? ", including your unsaved edits" : ""}. Project memory stays on and can learn again from future conversations. This cannot be undone.`}
-                confirmLabel="Delete"
+                open={disableMemoryConfirmOpen}
+                title="Turn off project memory?"
+                message={`This will delete the existing project memory.md file${dirty ? " and your unsaved draft" : ""}, cancel pending memory updates, and stop future memory updates until you turn project memory on again.`}
+                confirmLabel="Disable"
                 confirmVariant="danger"
-                confirmStatus={wiping ? "loading" : "idle"}
-                onConfirm={() => void wipeMemory()}
+                confirmStatus={
+                    settingsMutation === "disable" ? "loading" : "idle"
+                }
                 onCancel={() => {
-                    if (!wiping) setWipeConfirmOpen(false);
+                    if (!settingsMutation) setDisableMemoryConfirmOpen(false);
                 }}
+                onConfirm={() => void persistMemoryEnabled(false)}
             />
 
             <ConfirmPopup

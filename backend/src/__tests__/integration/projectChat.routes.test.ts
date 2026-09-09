@@ -69,12 +69,17 @@ function makeQuery(table: string) {
 }
 
 function mockSupabase() {
-    return {
+  return {
     from: vi.fn((table: string) => makeQuery(table)),
-        rpc: vi.fn(() => Promise.resolve({ data: null, error: null })),
-        auth: {
-            getUser: () =>
-                Promise.resolve({ data: { user: { id: "u1" } }, error: null }),
+    rpc: vi.fn((name: string) =>
+      Promise.resolve({
+        data: name.startsWith("append_chat_") ? "appended" : null,
+        error: null,
+      }),
+    ),
+    auth: {
+      getUser: () =>
+        Promise.resolve({ data: { user: { id: "u1" } }, error: null }),
         },
     };
 }
@@ -143,10 +148,11 @@ vi.mock("../../lib/access", () => ({
     checkProjectAccess: (...args: unknown[]) => checkProjectAccess(...args),
     ensureDocAccess: vi.fn(async () => ({ ok: true, isCreator: true })),
     ensureReviewAccess: vi.fn(async () => ({ ok: true, isCreator: true })),
-    ensureChatAccess: (...args: unknown[]) => ensureChatAccess(...args),
-    filterAccessibleDocumentIds: vi.fn(async (ids: string[]) => ids),
-    listAccessibleProjectIds: vi.fn(async () => []),
-    resolveContentOrgId: vi.fn(async () => ({ ok: true, orgId: null })),
+  ensureChatAccess: (...args: unknown[]) => ensureChatAccess(...args),
+  filterAccessibleDocumentIds: vi.fn(async (ids: string[]) => ids),
+  listAccessibleProjectIds: vi.fn(async () => []),
+  projectHasSharedAudience: vi.fn(async () => false),
+  resolveContentOrgId: vi.fn(async () => ({ ok: true, orgId: null })),
 }));
 
 import { app } from "../../app";
@@ -213,13 +219,13 @@ describe("POST /projects/:projectId/chat", () => {
         expect(res.text).toContain('"type":"chat_id"');
         expect(res.text).toContain('"type":"chat_title"');
         expect(runLLMStream).toHaveBeenCalledTimes(1);
-        expect(runLLMStream).toHaveBeenCalledWith(
-            expect.objectContaining({
-                emitDone: false,
-                memorySharedAudience: true,
-            }),
-        );
-        const systemPromptExtra = buildMessages.mock.calls[0]?.[2] as string;
+    expect(runLLMStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        emitDone: false,
+        memorySharedAudience: false,
+      }),
+    );
+    const systemPromptExtra = buildMessages.mock.calls[0]?.[2] as string;
         expect(systemPromptExtra).toContain("USER PERSONALISATION");
         expect(systemPromptExtra).toContain('"organisation": "Acme LLP"');
     expect(beginMemoryConversationTurn).toHaveBeenCalledWith({
@@ -238,9 +244,8 @@ describe("POST /projects/:projectId/chat", () => {
         table === "chat_messages" &&
         (value as { role?: unknown }).role === "assistant",
     );
-    const inputMessageId = (
-      userInsert?.value as { id?: string } | undefined
-    )?.id;
+    const inputMessageId = (userInsert?.value as { id?: string } | undefined)
+      ?.id;
     expect(inputMessageId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
@@ -367,19 +372,28 @@ describe("POST /projects/:projectId/chat", () => {
         ],
         [
             { ...VALID_BODY, attached_documents: [null] },
-            "attached_documents[0] must be an object",
-        ],
-        [
-            { ...VALID_BODY, ask_inputs_response: { responses: [] } },
-            "ask_inputs_response.responses must be a non-empty array",
-        ],
-        [
+      "attached_documents[0] must be an object",
+    ],
+    [
+      {
+        ...VALID_BODY,
+        ask_inputs_response: {
+          assistant_message_id: "assistant-1",
+          ask_event_id: "ask-1",
+          responses: [],
+        },
+      },
+      "ask_inputs_response.responses must be a non-empty array",
+    ],
+    [
+      {
+        ...VALID_BODY,
+        ask_inputs_response: {
+          assistant_message_id: "assistant-1",
+          ask_event_id: "ask-1",
+          responses: [
             {
-                ...VALID_BODY,
-                ask_inputs_response: {
-                    responses: [
-                        {
-                            id: "choice-1",
+              id: "choice-1",
                             kind: "choice",
                             question: "Governing law?",
                         },

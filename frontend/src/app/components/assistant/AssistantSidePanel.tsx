@@ -11,6 +11,7 @@ import Image from "next/image";
 import { X } from "lucide-react";
 import { DocPanel, type DocPanelMode } from "./DocPanel";
 import { FileTypeIcon } from "../shared/FileTypeIcon";
+import { VersionChip } from "../shared/VersionChip";
 import type { Citation, EditAnnotation, PanelDocument } from "../shared/types";
 import { cn } from "@/app/lib/utils";
 import { LIQUID_GLASS_FLOAT_CLASS } from "@/app/components/ui/liquid-surface";
@@ -438,15 +439,10 @@ export function AssistantSidePanel({
                                         {title}
                                     </span>
                                     {showVersionBadge && (
-                                        <span
-                                            className={`inline-flex shrink-0 items-center rounded border px-1 py-px text-[9px] font-medium ${
-                                                isActive
-                                                    ? "border-gray-200 bg-white text-gray-600"
-                                                    : "border-gray-300 bg-white/70 text-gray-500"
-                                            }`}
-                                        >
-                                            V{tab.document.version_number}
-                                        </span>
+                                        <VersionChip
+                                            n={tab.document.version_number}
+                                            size="sm"
+                                        />
                                     )}
                                 </div>
                                 <button

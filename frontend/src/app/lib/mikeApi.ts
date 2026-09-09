@@ -61,6 +61,8 @@ export type {
 };
 
 type AskInputsResponsePayload = {
+    assistant_message_id: string;
+    ask_event_id: string;
     responses: AskInputResponseItem[];
 };
 
@@ -516,16 +518,6 @@ export async function setProjectMemoryEnabled(
         },
     );
 }
-
-export async function wipeProjectMemory(
-    projectId: string,
-): Promise<MemoryCurrent> {
-    return apiRequest<MemoryCurrent>(
-        `/projects/${encodeURIComponent(projectId)}/memory`,
-        { method: "DELETE" },
-    );
-}
-
 
 export async function exportAccountData(): Promise<{
     blob: Blob;

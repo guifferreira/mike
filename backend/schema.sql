@@ -1941,6 +1941,117 @@ create index if not exists chat_messages_chat_created_id_idx
 create index if not exists chat_messages_author_idx
   on public.chat_messages(author_user_id) where author_user_id is not null;
 
+-- Append continuation events to one durable assistant row. The row lock keeps
+-- citations and events from overwriting one another when requests overlap.
+create or replace function public.append_chat_assistant_events(
+  p_chat_id uuid,
+  p_message_id uuid,
+  p_author_user_id uuid,
+  p_events jsonb,
+  p_citations jsonb default '[]'::jsonb
+)
+returns text
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  target public.chat_messages%rowtype;
+begin
+  if jsonb_typeof(p_events) is distinct from 'array'
+     or jsonb_typeof(p_citations) is distinct from 'array' then
+    raise exception using errcode = '22023', message = 'invalid_assistant_events';
+  end if;
+
+  select * into target
+  from public.chat_messages
+  where id = p_message_id
+    and chat_id = p_chat_id
+    and role = 'assistant'
+  for update;
+  if not found then return 'stale'; end if;
+  if target.author_user_id is distinct from p_author_user_id then
+    return 'forbidden';
+  end if;
+  if target.content is not null and jsonb_typeof(target.content) <> 'array' then
+    return 'stale';
+  end if;
+  if target.citations is not null
+     and jsonb_typeof(target.citations) <> 'array' then
+    return 'stale';
+  end if;
+
+  update public.chat_messages
+  set content = coalesce(target.content, '[]'::jsonb) || p_events,
+      citations = case
+        when jsonb_array_length(p_citations) = 0 then target.citations
+        else coalesce(target.citations, '[]'::jsonb) || p_citations
+      end
+  where id = target.id;
+  return 'appended';
+end;
+$$;
+
+-- Record an answer once, against the exact assistant row and ask event that
+-- produced it. This is the idempotency boundary for continuation requests.
+create or replace function public.append_chat_ask_inputs_response(
+  p_chat_id uuid,
+  p_message_id uuid,
+  p_author_user_id uuid,
+  p_ask_event_id text,
+  p_response jsonb
+)
+returns text
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  target public.chat_messages%rowtype;
+begin
+  if coalesce(p_ask_event_id, '') = ''
+     or (p_response->>'type') is distinct from 'ask_inputs_response'
+     or (p_response->>'ask_event_id') is distinct from p_ask_event_id
+     or (p_response->>'assistant_message_id') is distinct from p_message_id::text
+     or jsonb_typeof(p_response->'responses') is distinct from 'array' then
+    raise exception using errcode = '22023', message = 'invalid_ask_inputs_response';
+  end if;
+
+  select * into target
+  from public.chat_messages
+  where id = p_message_id
+    and chat_id = p_chat_id
+    and role = 'assistant'
+  for update;
+  if not found then return 'stale'; end if;
+  if target.author_user_id is distinct from p_author_user_id then
+    return 'forbidden';
+  end if;
+  if jsonb_typeof(target.content) <> 'array' then return 'stale'; end if;
+  if not exists (
+    select 1
+    from jsonb_array_elements(target.content) event
+    where event->>'type' = 'ask_inputs'
+      and event->>'event_id' = p_ask_event_id
+  ) then
+    return 'stale';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(target.content) event
+    where event->>'type' = 'ask_inputs_response'
+      and event->>'ask_event_id' = p_ask_event_id
+  ) then
+    return 'stale';
+  end if;
+
+  update public.chat_messages
+  set content = target.content || jsonb_build_array(p_response)
+  where id = target.id;
+  return 'appended';
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Word add-in chats
 -- ---------------------------------------------------------------------------
@@ -5108,14 +5219,6 @@ as $$
        + coalesce((select count(*) from marked), 0)::integer;
 $$;
 
-drop function if exists public.advance_memory_file(
-  uuid, bigint, bigint, uuid, uuid, text, integer, text, text, text, uuid,
-  text, text, uuid, uuid, uuid, uuid, bigint, bigint, bigint
-);
-drop function if exists public.begin_memory_file_upload(
-  uuid, bigint, bigint, uuid, text
-);
-
 create or replace function public.memory_source_allows_app_memory(
   p_surface text,
   p_project_id uuid
@@ -5371,6 +5474,61 @@ begin
     coalesce(p_enabled, target.enabled),
     changed_at,
     p_updated_by;
+end;
+$$;
+
+-- Account-level deletion is all-or-nothing and deliberately excludes every
+-- organization project and every personal project with a direct grant.
+create or replace function public.delete_user_private_memories(
+  p_user_id uuid
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  target record;
+  deleted_projects integer := 0;
+begin
+  -- Project moves and sharing changes take ROW EXCLUSIVE locks. Hold the
+  -- conflicting SHARE locks in parent-before-child order so a project cannot
+  -- become organization-scoped or directly shared between eligibility and
+  -- erasure.
+  lock table public.projects in share mode;
+  lock table public.project_access_grants in share mode;
+
+  insert into public.memory_files(scope, user_id, enabled)
+  values ('user', p_user_id, true)
+  on conflict (user_id) do nothing;
+
+  for target in
+    select eligible.id, eligible.scope
+    from (
+      select file.id, file.scope
+      from public.memory_files file
+      where file.scope = 'user' and file.user_id = p_user_id
+      union all
+      select file.id, file.scope
+      from public.memory_files file
+      join public.projects project on project.id = file.project_id
+      where file.scope = 'project'
+        and project.user_id = p_user_id
+        and project.org_id is null
+        and not exists (
+          select 1 from public.project_access_grants grant_row
+          where grant_row.project_id = project.id
+        )
+    ) eligible
+    order by eligible.id
+  loop
+    perform public.wipe_memory_file(target.id, null, p_user_id, 'wipe');
+    if target.scope = 'project' then
+      deleted_projects := deleted_projects + 1;
+    end if;
+  end loop;
+
+  return deleted_projects;
 end;
 $$;
 
@@ -6219,6 +6377,12 @@ revoke all on function public.write_memory_file(uuid, bigint, bigint, text, text
   from public, anon, authenticated;
 revoke all on function public.wipe_memory_file(uuid, boolean, uuid, text)
   from public, anon, authenticated;
+revoke all on function public.delete_user_private_memories(uuid)
+  from public, anon, authenticated;
+revoke all on function public.append_chat_assistant_events(uuid, uuid, uuid, jsonb, jsonb)
+  from public, anon, authenticated;
+revoke all on function public.append_chat_ask_inputs_response(uuid, uuid, uuid, text, jsonb)
+  from public, anon, authenticated;
 revoke all on function public.enable_memory_file(uuid, uuid)
   from public, anon, authenticated;
 revoke all on function public.begin_memory_conversation_turn(text, uuid, uuid, uuid, integer, integer)
@@ -6306,6 +6470,15 @@ grant execute
   to service_role;
 grant execute
   on function public.wipe_memory_file(uuid, boolean, uuid, text)
+  to service_role;
+grant execute
+  on function public.delete_user_private_memories(uuid)
+  to service_role;
+grant execute
+  on function public.append_chat_assistant_events(uuid, uuid, uuid, jsonb, jsonb)
+  to service_role;
+grant execute
+  on function public.append_chat_ask_inputs_response(uuid, uuid, uuid, text, jsonb)
   to service_role;
 grant execute
   on function public.enable_memory_file(uuid, uuid)

@@ -4,10 +4,7 @@ import {
   type AskInputsResponseRequest,
   type ChatMessage,
 } from "./types";
-import {
-  REASONING_LEVELS,
-  type ReasoningLevel,
-} from "../llm/types";
+import { REASONING_LEVELS, type ReasoningLevel } from "../llm/types";
 
 type ValidationResult<T> =
   | { ok: true; value: T }
@@ -298,6 +295,16 @@ export function parseOptionalAskInputsResponse(
       detail: "ask_inputs_response must be an object",
     };
   }
+  const assistantMessageId = parseNonEmptyString(
+    value.assistant_message_id,
+    "ask_inputs_response.assistant_message_id must be a non-empty string",
+  );
+  if (!assistantMessageId.ok) return assistantMessageId;
+  const askEventId = parseNonEmptyString(
+    value.ask_event_id,
+    "ask_inputs_response.ask_event_id must be a non-empty string",
+  );
+  if (!askEventId.ok) return askEventId;
   if (!Array.isArray(value.responses) || value.responses.length === 0) {
     return {
       ok: false,
@@ -377,7 +384,10 @@ export function parseOptionalAskInputsResponse(
         }
         continue;
       }
-      if (response.answer !== undefined && typeof response.answer !== "string") {
+      if (
+        response.answer !== undefined &&
+        typeof response.answer !== "string"
+      ) {
         return { ok: false, detail: `${field}.answer must be a string` };
       }
       if (

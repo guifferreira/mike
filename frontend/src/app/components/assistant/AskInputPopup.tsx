@@ -27,10 +27,12 @@ const OPEN_TEXT_MAX_LENGTH = 5_000;
 
 export function AskInputPopup({
     event,
+    assistantMessageId,
     onSubmit,
     onDismiss,
 }: {
     event: AskInputsEvent;
+    assistantMessageId: string;
     onSubmit?: (
         response: AskInputsResponse,
         content: string,
@@ -266,7 +268,12 @@ export function AskInputPopup({
                 filenames: docsForItem(item.id).map((doc) => doc.filename),
             };
         });
-        return { type: "ask_inputs_response", responses };
+        return {
+            type: "ask_inputs_response",
+            assistant_message_id: assistantMessageId,
+            ask_event_id: event.event_id,
+            responses,
+        };
     };
 
     const responseFiles = (response: AskInputsResponse) => {

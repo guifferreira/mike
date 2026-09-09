@@ -136,25 +136,16 @@ function installMemoryRoutes(
     req: Request,
     res: Response,
   ) => Promise<MemoryRequestContext | null>,
+  wipeContext?: (
+    req: Request,
+    res: Response,
+  ) => Promise<MemoryRequestContext | null>,
 ) {
   router.get("/", async (req, res) => {
     try {
       const ctx = await readContext(req, res);
       if (!ctx) return;
       res.json(await currentForContext(ctx));
-    } catch (error) {
-      await sendMemoryError(res, error);
-    }
-  });
-
-  router.get("/memory.md", async (req, res) => {
-    try {
-      const ctx = await readContext(req, res);
-      if (!ctx) return;
-      const current = await currentForContext(ctx);
-      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-      res.setHeader("Content-Disposition", 'attachment; filename="memory.md"');
-      res.send(current.content);
     } catch (error) {
       await sendMemoryError(res, error);
     }
@@ -216,27 +207,34 @@ function installMemoryRoutes(
     }
   });
 
-  router.delete("/", async (req, res) => {
-    try {
-      const ctx = await settingsContext(req, res);
-      if (!ctx) return;
-      res.json(
-        await wipeMemoryFile({
-          db: createServerSupabase(),
-          file: ctx.file,
-          enabled: null,
-          updatedBy: res.locals.userId as string,
-          source: "wipe",
-        }),
-      );
-    } catch (error) {
-      await sendMemoryError(res, error);
-    }
-  });
-
+  if (wipeContext) {
+    router.delete("/", async (req, res) => {
+      try {
+        const ctx = await wipeContext(req, res);
+        if (!ctx) return;
+        res.json(
+          await wipeMemoryFile({
+            db: createServerSupabase(),
+            file: ctx.file,
+            enabled: null,
+            updatedBy: res.locals.userId as string,
+            source: "wipe",
+          }),
+        );
+      } catch (error) {
+        await sendMemoryError(res, error);
+      }
+    });
+  }
 }
 
-installMemoryRoutes(userMemoryRouter, userContext, userContext, userContext);
+installMemoryRoutes(
+  userMemoryRouter,
+  userContext,
+  userContext,
+  userContext,
+  userContext,
+);
 installMemoryRoutes(
   projectMemoryRouter,
   projectContext("project.view"),

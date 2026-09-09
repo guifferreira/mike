@@ -35,16 +35,18 @@ vi.mock("@/app/components/ui/markdown-editor", () => ({
     onChange,
     ariaLabel,
     readOnly,
+    suspended,
   }: {
     value: string;
     onChange?: (value: string) => void;
     ariaLabel?: string;
     readOnly?: boolean;
+    suspended?: boolean;
   }) => (
     <textarea
       aria-label={ariaLabel}
       value={value}
-      readOnly={readOnly}
+      readOnly={readOnly || suspended}
       onChange={(event) => onChange?.(event.target.value)}
     />
   ),
@@ -334,7 +336,12 @@ describe("UserMemoryPage", () => {
     expect(
       screen.getByText("Turn off and delete app-wide memory?"),
     ).toBeVisible();
+    expect(
+      screen.getByText(/delete the existing app-wide memory\.md file/i),
+    ).toBeVisible();
     expect(screen.getByText(/and your unsaved draft/i)).toBeVisible();
+    expect(screen.getByText(/cancel pending memory updates/i)).toBeVisible();
+    expect(screen.getByText(/stop future memory updates/i)).toBeVisible();
     expect(editor).toHaveAttribute("readonly");
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(updateUserMemory).not.toHaveBeenCalled();

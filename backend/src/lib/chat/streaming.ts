@@ -56,6 +56,8 @@ export type AssistantEvent =
   | AskInputsEvent
   | {
       type: "ask_inputs_response";
+      assistant_message_id: string;
+      ask_event_id: string;
       responses: AskInputResponseItem[];
       /** User who supplied this continuation, for scoped-memory attribution. */
       author_user_id?: string;

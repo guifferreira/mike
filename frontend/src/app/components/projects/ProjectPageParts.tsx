@@ -65,7 +65,9 @@ export function DocIcon({
     fileType: string | null;
     muted?: boolean;
 }) {
-    return <FileTypeIcon fileType={fileType} className="h-4 w-4" muted={muted} />;
+    return (
+        <FileTypeIcon fileType={fileType} className="h-3.5 w-3.5" muted={muted} />
+    );
 }
 
 export function DocVersionHistory({

@@ -75,17 +75,19 @@ import {
 import {
     checkProjectAccess,
     creatorScopedAllowed,
-    ensureReviewAccess,
-    filterAccessibleDocumentIds,
-    normalizeEmail,
-    resolveContentOrgId,
+  ensureReviewAccess,
+  filterAccessibleDocumentIds,
+  normalizeEmail,
+  projectHasSharedAudience,
+  resolveContentOrgId,
 } from "../lib/access";
 import { can } from "../lib/permissions";
 import { loadProfileUsersByEmail } from "../lib/userLookup";
 import {
-    deleteContentGrant,
-    listContentGrants,
-    upsertContentGrant,
+  deleteContentGrant,
+  hasDirectContentGrants,
+  listContentGrants,
+  upsertContentGrant,
 } from "../lib/contentAccess";
 import { listContentPeople } from "../lib/resourcePeople";
 import {
@@ -106,13 +108,11 @@ type DocumentGrouping = "document" | "folder";
 type SupabaseDb = ReturnType<typeof createServerSupabase>;
 
 function isReviewGenerationRunning(review: Record<string, unknown>): boolean {
-    if (!review.active_generation_id || !review.generation_lease_expires_at) {
-        return false;
-    }
-    const leaseExpiresAt = Date.parse(
-        String(review.generation_lease_expires_at),
-    );
-    return Number.isFinite(leaseExpiresAt) && leaseExpiresAt > Date.now();
+  if (!review.active_generation_id || !review.generation_lease_expires_at) {
+    return false;
+  }
+  const leaseExpiresAt = Date.parse(String(review.generation_lease_expires_at));
+  return Number.isFinite(leaseExpiresAt) && leaseExpiresAt > Date.now();
 }
 
 function normalizeGrouping(value: unknown): DocumentGrouping {
@@ -151,14 +151,12 @@ async function getFolderPathMaps(
     project: Map<string, string>;
     library: Map<string, string>;
 }> {
-    const projectIds = [
-        ...new Set(
-            docs
-                .map((doc) => doc.project_id)
-                .filter((id): id is string => !!id),
-        ),
-    ];
-    const [projectResult, libraryResult] = await Promise.all([
+  const projectIds = [
+    ...new Set(
+      docs.map((doc) => doc.project_id).filter((id): id is string => !!id),
+    ),
+  ];
+  const [projectResult, libraryResult] = await Promise.all([
         projectIds.length
             ? db
                   .from("project_subfolders")
@@ -303,14 +301,12 @@ async function createRowsForReview(
             document_id: row.document_id,
             column_index: column.index,
             status: "pending",
-        })),
-    );
-    if (cells.length) {
-        const { error: cellError } = await db
-            .from("tabular_cells")
-            .insert(cells);
-        if (cellError) throw new Error(cellError.message);
-    }
+    })),
+  );
+  if (cells.length) {
+    const { error: cellError } = await db.from("tabular_cells").insert(cells);
+    if (cellError) throw new Error(cellError.message);
+  }
 }
 
 async function rebuildRowsForReview(
@@ -383,13 +379,12 @@ async function syncCellsForReviewRows(
     if (missingCells.length) {
         const { error } = await db.from("tabular_cells").insert(missingCells);
         if (error) throw new Error(error.message);
-    }
+  }
 }
-
 
 // GET /tabular-review
 tabularRouter.get("/", requireAuth, async (req, res) => {
-    const userId = res.locals.userId as string;
+  const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const db = createServerSupabase();
 
@@ -405,16 +400,13 @@ tabularRouter.get("/", requireAuth, async (req, res) => {
         scope: parseTabularReviewScope(req.query.scope),
         pagination: parsePaginationQuery(req.query as Record<string, unknown>),
         searchTerm: normalizeSearchTerm(req.query.search),
-        sort: parseTabularReviewSort(req.query as Record<string, unknown>),
-    });
+    sort: parseTabularReviewSort(req.query as Record<string, unknown>),
+  });
 
-    const { data, error } = await db.rpc(
-        "get_tabular_reviews_overview",
-        rpcArgs,
-    );
-    if (error) return void sendInternalError(res, error);
+  const { data, error } = await db.rpc("get_tabular_reviews_overview", rpcArgs);
+  if (error) return void sendInternalError(res, error);
 
-    res.json(data ?? []);
+  res.json(data ?? []);
 });
 
 // GET /tabular-review/ids (must come before /:reviewId routes)
@@ -504,32 +496,26 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
     const selectedModel = await validateSelectedModel(model, userId, db);
     if (!selectedModel.ok) {
         return void res.status(selectedModel.status).json(selectedModel.body);
-    }
-    if (project_id) {
-        // Creating a review inside a project contributes content to it.
-        const access = await checkProjectAccess(
-            project_id,
-            userId,
-            userEmail,
-            db,
-        );
-        if (!access.ok || !can(access.projectRole, "content.edit"))
-            return void res.status(404).json({ detail: "Project not found" });
-    }
+  }
+  if (project_id) {
+    // Creating a review inside a project contributes content to it.
+    const access = await checkProjectAccess(project_id, userId, userEmail, db);
+    if (!access.ok || !can(access.projectRole, "content.edit"))
+      return void res.status(404).json({ detail: "Project not found" });
+  }
     const allowedDocumentIds = Array.isArray(document_ids)
         ? await filterAccessibleDocumentIds(document_ids, userId, userEmail, db)
         : [];
     const grouping = normalizeGrouping(document_grouping);
     // Project reviews inherit their project's organization as tenant
     // provenance. Standalone reviews are always direct-scoped.
-    const resolvedOrg = await resolveContentOrgId(db, {
-        projectId: project_id ?? null,
-    });
-    if (!resolvedOrg.ok)
-        return void sendInternalError(res, resolvedOrg.detail);
-    if (org_id != null) {
-        return void res.status(400).json({
-            detail:
+  const resolvedOrg = await resolveContentOrgId(db, {
+    projectId: project_id ?? null,
+  });
+  if (!resolvedOrg.ok) return void sendInternalError(res, resolvedOrg.detail);
+  if (org_id != null) {
+    return void res.status(400).json({
+      detail:
                 "Tabular reviews cannot be organization-scoped. Create the review inside an organization project instead.",
         });
     }
@@ -564,14 +550,12 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
             grouping,
         );
     } catch (error) {
-        await db.from("tabular_reviews").delete().eq("id", review.id);
-        return void res.status(500).json({
-            detail:
-                error instanceof Error
-                    ? error.message
-                    : "Failed to create review rows",
-        });
-    }
+    await db.from("tabular_reviews").delete().eq("id", review.id);
+    return void res.status(500).json({
+      detail:
+        error instanceof Error ? error.message : "Failed to create review rows",
+    });
+  }
 
     void recordAudit(db, {
         userId,
@@ -592,14 +576,12 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
 
 // POST /tabular-review/prompt (must come before /:reviewId routes)
 tabularRouter.post("/prompt", requireAuth, async (req, res) => {
-    const userId = res.locals.userId as string;
-    const title =
-        typeof req.body.title === "string" ? req.body.title.trim() : "";
-    if (!title)
-        return void res.status(400).json({ detail: "title is required" });
+  const userId = res.locals.userId as string;
+  const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+  if (!title) return void res.status(400).json({ detail: "title is required" });
 
-    const format: string =
-        typeof req.body.format === "string" ? req.body.format : "text";
+  const format: string =
+    typeof req.body.format === "string" ? req.body.format : "text";
     const documentName: string =
         typeof req.body.documentName === "string"
             ? req.body.documentName.trim()
@@ -638,13 +620,14 @@ tabularRouter.post("/prompt", requireAuth, async (req, res) => {
     try {
         const { tabular_model: promptModel, api_keys } =
             await getUserModelSettings(userId);
-        if (!promptModel) {
-            return void res.status(409).json({
-                code: "model_required",
-                detail: "Select a default tabular review model in Settings → Model Preferences before generating a column prompt.",
-            });
-        }
-        const raw = await completeText({
+    if (!promptModel) {
+      return void res.status(409).json({
+        code: "model_required",
+        detail:
+          "Select a default tabular review model in Settings → Model Preferences before generating a column prompt.",
+      });
+    }
+    const raw = await completeText({
             model: promptModel,
             systemPrompt:
                 'You write high-quality column prompts for legal tabular review workflows. Return only valid JSON with a single field: {"prompt": string}. The prompt you write must focus solely on what to extract — never on how to format the response.',
@@ -737,14 +720,13 @@ tabularRouter.get("/:reviewId/people", requireAuth, async (req, res) => {
 
     const { data: review } = await db
         .from("tabular_reviews")
-        .select("id, user_id, project_id, org_id")
-        .eq("id", reviewId)
-        .single();
-    if (!review)
-        return void res.status(404).json({ detail: "Review not found" });
-    const access = await ensureReviewAccess(review, userId, userEmail, db);
-    if (!access.ok)
-        return void res.status(404).json({ detail: "Review not found" });
+    .select("id, user_id, project_id, org_id")
+    .eq("id", reviewId)
+    .single();
+  if (!review) return void res.status(404).json({ detail: "Review not found" });
+  const access = await ensureReviewAccess(review, userId, userEmail, db);
+  if (!access.ok)
+    return void res.status(404).json({ detail: "Review not found" });
 
     const people = await listContentPeople(
         db,
@@ -768,14 +750,13 @@ tabularRouter.get("/:reviewId/access", requireAuth, async (req, res) => {
     const db = createServerSupabase();
     const { data: review } = await db
         .from("tabular_reviews")
-        .select("id, user_id, project_id, org_id")
-        .eq("id", reviewId)
-        .maybeSingle();
-    if (!review)
-        return void res.status(404).json({ detail: "Review not found" });
-    const access = await ensureReviewAccess(review, userId, userEmail, db);
-    if (!access.ok)
-        return void res.status(404).json({ detail: "Review not found" });
+    .select("id, user_id, project_id, org_id")
+    .eq("id", reviewId)
+    .maybeSingle();
+  if (!review) return void res.status(404).json({ detail: "Review not found" });
+  const access = await ensureReviewAccess(review, userId, userEmail, db);
+  if (!access.ok)
+    return void res.status(404).json({ detail: "Review not found" });
     if (!can(access.projectRole, "access.manage"))
         return void res.status(403).json({
             detail: "Only a review owner can change who has access.",
@@ -806,14 +787,13 @@ tabularRouter.post("/:reviewId/access", requireAuth, async (req, res) => {
     const db = createServerSupabase();
     const { data: review } = await db
         .from("tabular_reviews")
-        .select("id, user_id, project_id, org_id")
-        .eq("id", reviewId)
-        .maybeSingle();
-    if (!review)
-        return void res.status(404).json({ detail: "Review not found" });
-    const access = await ensureReviewAccess(review, userId, userEmail, db);
-    if (!access.ok)
-        return void res.status(404).json({ detail: "Review not found" });
+    .select("id, user_id, project_id, org_id")
+    .eq("id", reviewId)
+    .maybeSingle();
+  if (!review) return void res.status(404).json({ detail: "Review not found" });
+  const access = await ensureReviewAccess(review, userId, userEmail, db);
+  if (!access.ok)
+    return void res.status(404).json({ detail: "Review not found" });
     if (!can(access.projectRole, "access.manage"))
         return void res.status(403).json({
             detail: "Only a review owner can change who has access.",
@@ -885,42 +865,35 @@ tabularRouter.delete(
             kind: "tabular_review",
             resourceId: reviewId,
             email: decodeURIComponent(req.params.email),
-        });
-        if (!result.ok) return void sendInternalError(res, result.detail);
-        if (!result.removed)
-            return void res
-                .status(404)
-                .json({ detail: "Access grant not found" });
-        res.status(204).send();
-    },
+    });
+    if (!result.ok) return void sendInternalError(res, result.detail);
+    if (!result.removed)
+      return void res.status(404).json({ detail: "Access grant not found" });
+    res.status(204).send();
+  },
 );
 
 // PATCH /tabular-review/:reviewId
 tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
-    const userId = res.locals.userId as string;
-    const userEmail = res.locals.userEmail as string | undefined;
-    const { reviewId } = req.params;
-    if (
-        req.body &&
-        typeof req.body === "object" &&
-        "shared_with" in req.body
-    )
-        return void res.status(400).json({
-            detail:
-                "shared_with is no longer supported; use the tabular review access endpoints.",
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { reviewId } = req.params;
+  if (req.body && typeof req.body === "object" && "shared_with" in req.body)
+    return void res.status(400).json({
+      detail:
+        "shared_with is no longer supported; use the tabular review access endpoints.",
         });
     const updates: Record<string, unknown> = {};
     if (req.body.title != null) updates.title = req.body.title;
     const modelUpdateProvided = req.body.model !== undefined;
     const projectIdUpdateProvided = req.body.project_id !== undefined;
-    const projectIdUpdate =
-        req.body.project_id === null
-            ? null
-            : typeof req.body.project_id === "string" &&
-                req.body.project_id.trim()
-              ? req.body.project_id.trim()
-              : undefined;
-    if (projectIdUpdateProvided && projectIdUpdate === undefined) {
+  const projectIdUpdate =
+    req.body.project_id === null
+      ? null
+      : typeof req.body.project_id === "string" && req.body.project_id.trim()
+        ? req.body.project_id.trim()
+        : undefined;
+  if (projectIdUpdateProvided && projectIdUpdate === undefined) {
         return void res.status(400).json({
             detail: "project_id must be a non-empty string or null",
         });
@@ -964,15 +937,13 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
         const selectedModel = await validateSelectedModel(
             req.body.model,
             userId,
-            db,
-        );
-        if (!selectedModel.ok) {
-            return void res
-                .status(selectedModel.status)
-                .json(selectedModel.body);
-        }
-        updates.model = selectedModel.model;
+      db,
+    );
+    if (!selectedModel.ok) {
+      return void res.status(selectedModel.status).json(selectedModel.body);
     }
+    updates.model = selectedModel.model;
+  }
     if (req.body.columns_config != null) {
         if (!can(access.projectRole, "content.edit")) {
             return void res.status(403).json({
@@ -1029,13 +1000,12 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
         // personal one keeps answering yes to that org arm and stays visible
         // to every member of an organization it no longer belongs to. Same
         // helper and argument shape as the create path.
-        const movedOrg = await resolveContentOrgId(db, {
-            projectId: projectIdUpdate ?? null,
-        });
-        if (!movedOrg.ok)
-            return void sendInternalError(res, movedOrg.detail);
-        updates.org_id = movedOrg.orgId;
-    }
+    const movedOrg = await resolveContentOrgId(db, {
+      projectId: projectIdUpdate ?? null,
+    });
+    if (!movedOrg.ok) return void sendInternalError(res, movedOrg.detail);
+    updates.org_id = movedOrg.orgId;
+  }
 
     const { data: updatedReview, error: updateError } = await db
         .from("tabular_reviews")
@@ -1200,21 +1170,14 @@ tabularRouter.post("/:reviewId/clear-cells", requireAuth, async (req, res) => {
         // unreachable. Flag-gated so synchronous deployments never dial Redis.
         if (process.env.ASYNC_TABULAR_EXTRACTION === "true") {
             try {
-                const columnIndexes = (
-                    (review.columns_config as { index: number }[] | null) ?? []
-                ).map((c) => c.index);
-                await removeQueuedExtractionJobs(
-                    reviewId,
-                    row_ids,
-                    columnIndexes,
-                );
-            } catch (err) {
-                console.error(
-                    "[tabular/clear-cells] queue cancellation failed",
-                    err,
-                );
-            }
-        }
+        const columnIndexes = (
+          (review.columns_config as { index: number }[] | null) ?? []
+        ).map((c) => c.index);
+        await removeQueuedExtractionJobs(reviewId, row_ids, columnIndexes);
+      } catch (err) {
+        console.error("[tabular/clear-cells] queue cancellation failed", err);
+      }
+    }
 
         const { error } = await db
             .from("tabular_cells")
@@ -1289,36 +1252,26 @@ tabularRouter.post(
         if (!column)
             return void res.status(400).json({ detail: "Column not found" });
 
-        const rows = await loadReviewRows(db, reviewId);
-        const row = rows.find((candidate) => candidate.id === row_id);
-        if (!row)
-            return void res
-                .status(404)
-                .json({ detail: "Review row not found" });
-        const sourceIds = row.source_document_ids ?? [];
-        const allowedSourceIds = await filterAccessibleDocumentIds(
-            sourceIds,
+    const rows = await loadReviewRows(db, reviewId);
+    const row = rows.find((candidate) => candidate.id === row_id);
+    if (!row)
+      return void res.status(404).json({ detail: "Review row not found" });
+    const sourceIds = row.source_document_ids ?? [];
+    const allowedSourceIds = await filterAccessibleDocumentIds(
+      sourceIds,
             userId,
             userEmail,
-            db,
-        );
-        if (allowedSourceIds.length !== sourceIds.length)
-            return void res
-                .status(404)
-                .json({ detail: "Review row not found" });
+      db,
+    );
+    if (allowedSourceIds.length !== sourceIds.length)
+      return void res.status(404).json({ detail: "Review row not found" });
 
-        const selectedModel = await validateSelectedModel(
-            review.model,
-            userId,
-            db,
-        );
-        if (!selectedModel.ok) {
-            return void res
-                .status(selectedModel.status)
-                .json(selectedModel.body);
-        }
-        const tabular_model = selectedModel.model;
-        const api_keys = selectedModel.apiKeys;
+    const selectedModel = await validateSelectedModel(review.model, userId, db);
+    if (!selectedModel.ok) {
+      return void res.status(selectedModel.status).json(selectedModel.body);
+    }
+    const tabular_model = selectedModel.model;
+    const api_keys = selectedModel.apiKeys;
 
         const generationId = randomUUID();
         const { data: startResult, error: startError } = await db.rpc(
@@ -1341,15 +1294,13 @@ tabularRouter.post(
             return void res.status(409).json({
                 code: "review_stale",
                 detail: "A newer version of this tabular review is available.",
-            });
-        }
-        if (startResult !== "started") {
-            return void res
-                .status(startResult === "not_found" ? 404 : 500)
-                .json({
-                    detail:
-                        startResult === "not_found"
-                            ? "Review not found"
+      });
+    }
+    if (startResult !== "started") {
+      return void res.status(startResult === "not_found" ? 404 : 500).json({
+        detail:
+          startResult === "not_found"
+            ? "Review not found"
                             : "Failed to regenerate tabular review cell",
                 });
         }
@@ -1430,26 +1381,21 @@ tabularRouter.post(
                         generationId,
                     });
                     leaseHandedOff = true;
-                } catch (err) {
-                    // Nothing will ever run this cell, so we still own both the
-                    // cell's terminal state and the lease (released in finally).
-                    console.error(
-                        "[tabular/regenerate-cell] enqueue failed",
-                        err,
-                    );
-                    await finalizeCell(db, {
-                        reviewId,
-                        rowId: row.id,
+        } catch (err) {
+          // Nothing will ever run this cell, so we still own both the
+          // cell's terminal state and the lease (released in finally).
+          console.error("[tabular/regenerate-cell] enqueue failed", err);
+          await finalizeCell(db, {
+            reviewId,
+            rowId: row.id,
                         columnIndex: column_index,
-                        status: "error",
-                        generationId,
-                    });
-                    return void res
-                        .status(500)
-                        .json({ detail: "Generation failed" });
-                }
+            status: "error",
+            generationId,
+          });
+          return void res.status(500).json({ detail: "Generation failed" });
+        }
 
-                const terminal = await awaitCellTerminal({
+        const terminal = await awaitCellTerminal({
                     db,
                     reviewId,
                     rowId: row.id,
@@ -1463,14 +1409,12 @@ tabularRouter.post(
                     // resume stream or a reload.
                     return void res.status(202).json({
                         status: "generating",
-                        detail: "Extraction still running",
-                    });
-                if (terminal.status === "error")
-                    return void res
-                        .status(500)
-                        .json({ detail: "Generation failed" });
-                return void res.json(terminal.content);
-            }
+            detail: "Extraction still running",
+          });
+        if (terminal.status === "error")
+          return void res.status(500).json({ detail: "Generation failed" });
+        return void res.json(terminal.content);
+      }
 
             const markdown = await loadRowDocumentText(db, row);
             const result = await queryTabularCell(
@@ -1488,15 +1432,13 @@ tabularRouter.post(
                     .from("tabular_cells")
                     .update({ status: "error", generation_id: null })
                     .eq("review_id", reviewId)
-                    .eq("row_id", row.id)
-                    .eq("column_index", column_index)
-                    .eq("generation_id", generationId);
-                return void res
-                    .status(500)
-                    .json({ detail: "Generation failed" });
-            }
+          .eq("row_id", row.id)
+          .eq("column_index", column_index)
+          .eq("generation_id", generationId);
+        return void res.status(500).json({ detail: "Generation failed" });
+      }
 
-            const { error: completedError } = await db
+      const { error: completedError } = await db
                 .from("tabular_cells")
                 .update({
                     content: JSON.stringify(result),
@@ -1528,19 +1470,16 @@ tabularRouter.post(
             clearInterval(leaseHeartbeat);
             // On the async path the lease now belongs to the worker running the
             // enqueued job — including on the 202 branch, where the job is
-            // still going after this response. It releases it itself once the
-            // cell is terminal (`finishGenerationIfIdle`).
-            if (!leaseHandedOff) {
-                const { error } = await db.rpc(
-                    "finish_tabular_review_generation",
-                    {
-                        target_review_id: reviewId,
-                        target_generation_id: generationId,
-                    },
-                );
-                if (error) {
-                    console.error(
-                        "[tabular/regenerate-cell] failed to release generation lease",
+      // still going after this response. It releases it itself once the
+      // cell is terminal (`finishGenerationIfIdle`).
+      if (!leaseHandedOff) {
+        const { error } = await db.rpc("finish_tabular_review_generation", {
+          target_review_id: reviewId,
+          target_generation_id: generationId,
+        });
+        if (error) {
+          console.error(
+            "[tabular/regenerate-cell] failed to release generation lease",
                         error,
                     );
                 }
@@ -1570,15 +1509,13 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
         userEmail,
     });
     if (!prepared.ok) {
-        if (prepared.kind === "not_found")
-            return void res.status(404).json({ detail: "Review not found" });
-        if (prepared.kind === "no_columns")
-            return void res
-                .status(400)
-                .json({ detail: "No columns configured" });
-        return void res.status(prepared.status).json(prepared.body);
-    }
-    const { columns, tabular_model, api_keys } = prepared.data;
+    if (prepared.kind === "not_found")
+      return void res.status(404).json({ detail: "Review not found" });
+    if (prepared.kind === "no_columns")
+      return void res.status(400).json({ detail: "No columns configured" });
+    return void res.status(prepared.status).json(prepared.body);
+  }
+  const { columns, tabular_model, api_keys } = prepared.data;
 
     const expectedUpdatedAt = req.body?.expected_updated_at;
     if (
@@ -1808,16 +1745,13 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
                 await processRow(rows[rowIndex]);
             }
         };
-        await Promise.all(
-            Array.from(
-                {
-                    length: Math.min(
-                        TABULAR_GENERATION_CONCURRENCY,
-                        rows.length,
-                    ),
-                },
-                () => runWorker(),
-            ),
+    await Promise.all(
+      Array.from(
+        {
+          length: Math.min(TABULAR_GENERATION_CONCURRENCY, rows.length),
+        },
+        () => runWorker(),
+      ),
         );
 
         if (!generationAbort.signal.aborted) {
@@ -1852,19 +1786,16 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
         streamFinished = true;
         if (leaseHeartbeat) clearInterval(leaseHeartbeat);
         // On the async path the lease now belongs to the workers and the SSE
-        // view is still tailing them, so neither is ours to close.
-        if (!leaseHandedOff) {
-            try {
-                const { error } = await db.rpc(
-                    "finish_tabular_review_generation",
-                    {
-                        target_review_id: reviewId,
-                        target_generation_id: generationId,
-                    },
-                );
-                if (error) throw error;
-            } catch (error) {
-                console.error(
+    // view is still tailing them, so neither is ours to close.
+    if (!leaseHandedOff) {
+      try {
+        const { error } = await db.rpc("finish_tabular_review_generation", {
+          target_review_id: reviewId,
+          target_generation_id: generationId,
+        });
+        if (error) throw error;
+      } catch (error) {
+        console.error(
                     "[tabular/generate] failed to release generation lease",
                     error,
                 );
@@ -1893,18 +1824,14 @@ tabularRouter.get(
             reviewId,
             userId,
             userEmail,
-        });
-        if (!prepared.ok) {
-            if (prepared.kind === "not_found")
-                return void res
-                    .status(404)
-                    .json({ detail: "Review not found" });
-            if (prepared.kind === "no_columns")
-                return void res
-                    .status(400)
-                    .json({ detail: "No columns configured" });
-            return void res.status(prepared.status).json(prepared.body);
-        }
+    });
+    if (!prepared.ok) {
+      if (prepared.kind === "not_found")
+        return void res.status(404).json({ detail: "Review not found" });
+      if (prepared.kind === "no_columns")
+        return void res.status(400).json({ detail: "No columns configured" });
+      return void res.status(prepared.status).json(prepared.body);
+    }
 
         const work = await loadTabularGenerateWork(db, {
             reviewId,
@@ -1972,14 +1899,13 @@ async function ensureReviewChatWriteAccess(
         .from("tabular_reviews")
         .select("id, user_id, project_id, org_id")
         .eq("id", reviewId)
-        .single();
-    if (!review) return { ok: false, status: 404, detail: "Review not found" };
-    const access = await ensureReviewAccess(review, userId, userEmail, db);
-    if (!access.ok)
-        return { ok: false, status: 404, detail: "Review not found" };
-    const { data: chat } = await db
-        .from("tabular_review_chats")
-        .select("id, review_id, user_id")
+    .single();
+  if (!review) return { ok: false, status: 404, detail: "Review not found" };
+  const access = await ensureReviewAccess(review, userId, userEmail, db);
+  if (!access.ok) return { ok: false, status: 404, detail: "Review not found" };
+  const { data: chat } = await db
+    .from("tabular_review_chats")
+    .select("id, review_id, user_id")
         .eq("id", chatId)
         .single();
     if (!chat || chat.review_id !== reviewId)
@@ -2064,15 +1990,13 @@ tabularRouter.patch(
         const body =
             req.body && typeof req.body === "object" && !Array.isArray(req.body)
                 ? (req.body as Record<string, unknown>)
-                : {};
-        const invalidField = Object.keys(body).find(
-            (field) =>
-                field !== "title" &&
-                field !== "model" &&
-                field !== "reasoningLevel",
-        );
-        if (invalidField) {
-            return void res.status(400).json({
+        : {};
+    const invalidField = Object.keys(body).find(
+      (field) =>
+        field !== "title" && field !== "model" && field !== "reasoningLevel",
+    );
+    if (invalidField) {
+      return void res.status(400).json({
                 detail: `Unsupported chat field: ${invalidField}`,
             });
         }
@@ -2092,15 +2016,13 @@ tabularRouter.patch(
         const parsedModel = parseOptionalModel(body.model);
         if (hasModel && !parsedModel.ok) {
             return void res.status(400).json({ detail: parsedModel.detail });
-        }
-        const parsedReasoning = parseOptionalReasoning(body.reasoningLevel);
-        if (hasReasoning && !parsedReasoning.ok) {
-            return void res
-                .status(400)
-                .json({ detail: parsedReasoning.detail });
-        }
+    }
+    const parsedReasoning = parseOptionalReasoning(body.reasoningLevel);
+    if (hasReasoning && !parsedReasoning.ok) {
+      return void res.status(400).json({ detail: parsedReasoning.detail });
+    }
 
-        const db = createServerSupabase();
+    const db = createServerSupabase();
         const gate = await ensureReviewChatWriteAccess(
             reviewId,
             chatId,
@@ -2138,15 +2060,13 @@ tabularRouter.patch(
                     detail: resolution.detail,
                 });
             }
-            selectedModel = resolution.model;
-        }
-        const selectedReasoningLevel =
-            hasReasoning && parsedReasoning.ok
-                ? parsedReasoning.value
-                : undefined;
-        const update = {
-            ...(hasTitle ? { title: title.slice(0, 200) } : {}),
-            ...(selectedModel ? { model: selectedModel } : {}),
+      selectedModel = resolution.model;
+    }
+    const selectedReasoningLevel =
+      hasReasoning && parsedReasoning.ok ? parsedReasoning.value : undefined;
+    const update = {
+      ...(hasTitle ? { title: title.slice(0, 200) } : {}),
+      ...(selectedModel ? { model: selectedModel } : {}),
             ...(selectedReasoningLevel
                 ? { reasoning_level: selectedReasoningLevel }
                 : {}),
@@ -2251,16 +2171,14 @@ function extractTabularAnnotations(
 ) {
     return parseTabularCitations(fullText).map((c) => ({
         type: "tabular_citation" as const,
-        ref: c.ref,
-        col_index: c.col_index,
-        row_index: c.row_index,
-        col_name:
-            tabularStore.columns[c.col_index]?.name ?? `Col ${c.col_index}`,
-        doc_name:
-            tabularStore.documents[c.row_index]?.filename ??
-            `Row ${c.row_index}`,
-        quote: c.quote,
-    }));
+    ref: c.ref,
+    col_index: c.col_index,
+    row_index: c.row_index,
+    col_name: tabularStore.columns[c.col_index]?.name ?? `Col ${c.col_index}`,
+    doc_name:
+      tabularStore.documents[c.row_index]?.filename ?? `Row ${c.row_index}`,
+    quote: c.quote,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2365,43 +2283,45 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
         .from("tabular_reviews")
         .select("*")
         .eq("id", reviewId)
-        .single();
-    if (error || !review)
-        return void res.status(404).json({ detail: "Review not found" });
-    const reviewAccess = await ensureReviewAccess(
-        review,
-        userId,
-        userEmail,
-        db,
-    );
-    if (!reviewAccess.ok || !can(reviewAccess.projectRole, "content.edit"))
-        return void res.status(404).json({ detail: "Review not found" });
+    .single();
+  if (error || !review)
+    return void res.status(404).json({ detail: "Review not found" });
+  const reviewAccess = await ensureReviewAccess(review, userId, userEmail, db);
+  if (!reviewAccess.ok || !can(reviewAccess.projectRole, "content.edit"))
+    return void res.status(404).json({ detail: "Review not found" });
 
     // A direct review grant does not grant access to the containing project.
     // Keep project memory behind the project's own capability verdict: view
-    // may read it, while only a project editor may curate it.
-    let readableMemoryProjectId: string | null = null;
-    let writableMemoryProjectId: string | null = null;
-    if (review.project_id) {
-        const projectAccess = await checkProjectAccess(
-            review.project_id,
+  // may read it, while only a project editor may curate it.
+  let readableMemoryProjectId: string | null = null;
+  let writableMemoryProjectId: string | null = null;
+  let memorySharedAudience =
+    !reviewAccess.isCreator ||
+    (await hasDirectContentGrants(db, "tabular_review", review.id));
+  if (review.project_id) {
+    const projectAccess = await checkProjectAccess(
+      review.project_id,
             userId,
             userEmail,
             db,
-        );
-        if (projectAccess.ok) {
-            readableMemoryProjectId = review.project_id;
-            if (can(projectAccess.projectRole, "content.edit")) {
-                writableMemoryProjectId = review.project_id;
-            }
-        }
+    );
+    if (projectAccess.ok) {
+      readableMemoryProjectId = review.project_id;
+      memorySharedAudience =
+        memorySharedAudience ||
+        (await projectHasSharedAudience(
+          db,
+          review.project_id,
+          projectAccess.project.org_id,
+        ));
+      if (can(projectAccess.projectRole, "content.edit")) {
+        writableMemoryProjectId = review.project_id;
+      }
     }
-    const memorySharedAudience =
-        !!review.project_id || !reviewAccess.isCreator;
-
-    // Fetch all cells and logical review rows for this review.
-    const { data: cells } = await db
-        .from("tabular_cells")
+  }
+  // Fetch all cells and logical review rows for this review.
+  const { data: cells } = await db
+    .from("tabular_cells")
         .select("*")
         .eq("review_id", reviewId);
     const rows = await loadReviewRows(db, reviewId);
@@ -2504,15 +2424,13 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
                 model: selectedChatModel,
                 reasoning_level: selectedReasoningLevel,
             })
-            .select("id, title")
-            .single();
-        if (newChatError || !newChat) {
-            return void res
-                .status(500)
-                .json({ detail: "Failed to create chat" });
-        }
-        chatId = newChat?.id ?? null;
-        chatTitle = newChat?.title ?? null;
+      .select("id, title")
+      .single();
+    if (newChatError || !newChat) {
+      return void res.status(500).json({ detail: "Failed to create chat" });
+    }
+    chatId = newChat?.id ?? null;
+    chatTitle = newChat?.title ?? null;
     }
 
   let memoryTurn: MemoryConversationTurn | null = null;
@@ -2580,14 +2498,13 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             userId,
             db,
             write,
-            extraTools: TABULAR_TOOLS,
-            includeResearchTools: false,
-            tabularStore,
-            buildCitations: (text) =>
-                extractTabularAnnotations(text, tabularStore),
-            model: selectedChatModel,
-            reasoning: selectedReasoningLevel,
-            apiKeys: api_keys,
+        extraTools: TABULAR_TOOLS,
+        includeResearchTools: false,
+        tabularStore,
+        buildCitations: (text) => extractTabularAnnotations(text, tabularStore),
+        model: selectedChatModel,
+        reasoning: selectedReasoningLevel,
+        apiKeys: api_keys,
             signal: streamAbort.signal,
             includeMemory: true,
             memoryProjectId: readableMemoryProjectId,
@@ -2725,15 +2642,12 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
                         annotations: annotations.length ? annotations : null,
               author_user_id: userId,
               memory_input_message_id: inputMessageId,
-                });
-                if (saveError)
-                    console.error(
-                        "[tabular/chat] failed to save error",
-                        saveError,
-                    );
-            } catch (saveErr) {
-                console.error("[tabular/chat] failed to save error", saveErr);
-            }
+            });
+          if (saveError)
+            console.error("[tabular/chat] failed to save error", saveError);
+        } catch (saveErr) {
+          console.error("[tabular/chat] failed to save error", saveErr);
+        }
         }
         try {
             write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);

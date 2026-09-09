@@ -8,6 +8,7 @@ import {
 import { enqueueStorageCleanup } from "./dbq/enqueue";
 import { removeGrantsForEmail } from "./projectAccess";
 import { removeContentGrantsForEmail } from "./contentAccess";
+import { chunkArray } from "./arrays";
 
 type Db = ReturnType<typeof createServerSupabase>;
 
@@ -15,14 +16,6 @@ const DELETE_BATCH_SIZE = 500;
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
     return [...new Set(values.filter((value): value is string => !!value))];
-}
-
-function chunks<T>(values: T[], size = DELETE_BATCH_SIZE): T[][] {
-    const result: T[][] = [];
-    for (let i = 0; i < values.length; i += size) {
-        result.push(values.slice(i, i + size));
-    }
-    return result;
 }
 
 async function throwIfError<T extends { message?: string } | null>(
@@ -33,7 +26,7 @@ async function throwIfError<T extends { message?: string } | null>(
 }
 
 async function deleteByIds(db: Db, table: string, ids: string[]) {
-    for (const batch of chunks(ids)) {
+    for (const batch of chunkArray(ids, DELETE_BATCH_SIZE)) {
         const { error } = await (db as any).from(table).delete().in("id", batch);
         await throwIfError(error, `Failed to delete ${table}`);
     }
@@ -45,7 +38,7 @@ async function deleteWhereIn(
     column: string,
     values: string[],
 ) {
-    for (const batch of chunks(values)) {
+    for (const batch of chunkArray(values, DELETE_BATCH_SIZE)) {
         const { error } = await (db as any)
             .from(table)
             .delete()
@@ -69,7 +62,7 @@ async function wipeMemoryForOwners(
     if (uniqueOwnerIds.length === 0) return;
     const ownerColumn = scope === "user" ? "user_id" : "project_id";
 
-    for (const ownerBatch of chunks(uniqueOwnerIds)) {
+    for (const ownerBatch of chunkArray(uniqueOwnerIds, DELETE_BATCH_SIZE)) {
         const { data, error } = await db
             .from("memory_files")
             .select("id")
@@ -177,7 +170,7 @@ async function orgProjectIdsHoldingUserContent(
     if (unique.length === 0) return [];
 
     const orgProjectIds: string[] = [];
-    for (const batch of chunks(unique)) {
+    for (const batch of chunkArray(unique, DELETE_BATCH_SIZE)) {
         const { data, error } = await db
             .from("projects")
             .select("id, org_id")
@@ -254,7 +247,7 @@ async function getDocumentIdsForAccountDeletion(
         candidates.map((row) => row.workflow_id ?? null),
     );
     const survivingWorkflowIds = new Set<string>();
-    for (const batch of chunks(workflowIds)) {
+    for (const batch of chunkArray(workflowIds, DELETE_BATCH_SIZE)) {
         const { data: workflowRows, error: workflowError } = await db
             .from("workflows")
             .select("id, org_id")
@@ -304,7 +297,7 @@ async function detachOrgProjectContent(
 ) {
     if (orgProjectIds.length > 0) {
         for (const table of PROJECT_CONTENT_TABLES) {
-            for (const batch of chunks(orgProjectIds)) {
+            for (const batch of chunkArray(orgProjectIds, DELETE_BATCH_SIZE)) {
                 const { error } = await (db as any)
                     .from(table)
                     .update({ user_id: null })
@@ -317,7 +310,7 @@ async function detachOrgProjectContent(
         // above deliberately includes colleagues' projects — that is how
         // their content gets kept — and blanking `user_id` there would erase
         // a living colleague's authorship of a project they still own.
-        for (const batch of chunks(orgProjectIds)) {
+        for (const batch of chunkArray(orgProjectIds, DELETE_BATCH_SIZE)) {
             const { error } = await db
                 .from("projects")
                 .update({ user_id: null })
@@ -393,7 +386,7 @@ async function detachChildrenOfSurvivingContent(db: Db, userId: string) {
         // A parent survives when it is org-owned — either detached moments
         // ago (user_id now null) or created by somebody still present.
         const survivors: string[] = [];
-        for (const batch of chunks(parentIds)) {
+        for (const batch of chunkArray(parentIds, DELETE_BATCH_SIZE)) {
             const { data: parents, error: parentError } = await (db as any)
                 .from(parent)
                 .select("id, org_id")
@@ -414,7 +407,10 @@ async function detachChildrenOfSurvivingContent(db: Db, userId: string) {
         }
         if (survivors.length === 0) continue;
 
-        for (const batch of chunks(uniqueStrings(survivors))) {
+        for (const batch of chunkArray(
+            uniqueStrings(survivors),
+            DELETE_BATCH_SIZE,
+        )) {
             const { error: detachError } = await (db as any)
                 .from(table)
                 .update({ user_id: null })
@@ -443,7 +439,7 @@ async function collectDocumentVersionPaths(
 ): Promise<string[]> {
     const paths = new Set<string>();
 
-    for (const batch of chunks(documentIds)) {
+    for (const batch of chunkArray(documentIds, DELETE_BATCH_SIZE)) {
         const { data, error } = await db
             .from("document_versions")
             .select("id, storage_path, pdf_storage_path")
@@ -503,7 +499,7 @@ async function claimedStoragePaths(
             claimed.add(value);
     };
 
-    for (const batch of chunks(paths)) {
+    for (const batch of chunkArray(paths, DELETE_BATCH_SIZE)) {
         // Workflow-asset files are claimed through document_versions too:
         // 20260901_03 gave every legacy reference file a version row carrying
         // its original workflow-references/ storage path.
@@ -870,7 +866,7 @@ export async function deleteUserProjects(
     );
 
     if (orgProjectIds.length > 0) {
-        for (const batch of chunks(orgProjectIds)) {
+        for (const batch of chunkArray(orgProjectIds, DELETE_BATCH_SIZE)) {
             const { error } = await db
                 .from("projects")
                 .update({ user_id: null })

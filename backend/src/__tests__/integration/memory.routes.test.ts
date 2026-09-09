@@ -129,7 +129,7 @@ describe("scoped memory routes", () => {
     });
   });
 
-  it("destructively disables but DELETE preserves the enable state", async () => {
+  it("destructively disables user memory but user DELETE preserves the enable state", async () => {
     await request(testApp())
       .patch("/user/memory/settings")
       .send({ enabled: false })
@@ -152,7 +152,6 @@ describe("scoped memory routes", () => {
     const base = "/projects/00000000-0000-4000-8000-000000000020/memory";
 
     await request(testApp()).get(base).expect(200);
-    await request(testApp()).get(`${base}/memory.md`).expect(200);
     await request(testApp())
       .put(base)
       .send({ content: "next", expected_revision: 2 })
@@ -161,8 +160,6 @@ describe("scoped memory routes", () => {
       .patch(`${base}/settings`)
       .send({ enabled: false })
       .expect(403);
-    await request(testApp()).delete(base).expect(403);
-
     expect(mocks.writeMemoryFile).not.toHaveBeenCalled();
     expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
   });
@@ -190,10 +187,18 @@ describe("scoped memory routes", () => {
     );
   });
 
+  it("does not expose a standalone project-memory wipe route", async () => {
+    const base = "/projects/00000000-0000-4000-8000-000000000020/memory";
+
+    await request(testApp()).delete(base).expect(404);
+
+    expect(mocks.checkProjectAccess).not.toHaveBeenCalled();
+    expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
+  });
+
   it("returns 404 for every project operation when access is absent", async () => {
     mocks.checkProjectAccess.mockResolvedValue({ ok: false, status: 404 });
     const base = "/projects/00000000-0000-4000-8000-000000000020/memory";
-    const versionId = "00000000-0000-4000-8000-000000000021";
 
     await request(testApp()).get(base).expect(404);
     await request(testApp())
@@ -204,8 +209,6 @@ describe("scoped memory routes", () => {
       .patch(`${base}/settings`)
       .send({ enabled: false })
       .expect(404);
-    await request(testApp()).delete(base).expect(404);
-
     expect(mocks.writeMemoryFile).not.toHaveBeenCalled();
     expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
   });
@@ -225,8 +228,6 @@ describe("scoped memory routes", () => {
       .patch(`${base}/settings`)
       .send({ enabled: false })
       .expect(403);
-    await request(testApp()).delete(base).expect(403);
-
     expect(mocks.writeMemoryFile).toHaveBeenCalledWith(
       expect.objectContaining({
         file,
@@ -238,34 +239,16 @@ describe("scoped memory routes", () => {
     expect(mocks.wipeMemoryFile).not.toHaveBeenCalled();
   });
 
-  it("allows project owners to disable and wipe shared memory", async () => {
+  it("allows project owners to disable shared memory", async () => {
     const base = "/projects/00000000-0000-4000-8000-000000000020/memory";
 
     await request(testApp())
       .patch(`${base}/settings`)
       .send({ enabled: false })
       .expect(200);
-    await request(testApp()).delete(base).expect(200);
-
-    expect(mocks.wipeMemoryFile).toHaveBeenNthCalledWith(
-      1,
+    expect(mocks.wipeMemoryFile).toHaveBeenCalledOnce();
+    expect(mocks.wipeMemoryFile).toHaveBeenCalledWith(
       expect.objectContaining({ enabled: false, source: "settings" }),
     );
-    expect(mocks.wipeMemoryFile).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ enabled: null, source: "wipe" }),
-    );
-  });
-
-  it("serves literal Markdown as an attachment", async () => {
-    const response = await request(testApp())
-      .get("/user/memory/memory.md")
-      .expect(200);
-    expect(response.headers["content-type"]).toMatch(/^text\/markdown/);
-    expect(response.headers["content-disposition"]).toBe(
-      'attachment; filename="memory.md"',
-    );
-    expect(response.headers["cache-control"]).toBe("private, no-store");
-    expect(response.text).toBe("# Memory");
   });
 });
