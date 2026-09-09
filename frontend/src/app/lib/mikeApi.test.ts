@@ -18,6 +18,7 @@ import {
     createWorkflow,
     deleteAccount,
     deleteAllChats,
+    deleteAllMemories,
     deleteAllProjects,
     deleteAllTabularReviews,
     deleteChat,
@@ -1901,6 +1902,12 @@ describe("thin endpoint wrappers", () => {
             name: "deleteAllTabularReviews",
             call: () => deleteAllTabularReviews(),
             url: "/user/tabular-reviews",
+            method: "DELETE",
+        },
+        {
+            name: "deleteAllMemories",
+            call: () => deleteAllMemories(),
+            url: "/user/memories",
             method: "DELETE",
         },
         {
