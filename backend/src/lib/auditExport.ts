@@ -189,13 +189,39 @@ export async function queryEvents(
     q: AuditQuery,
     resolveDisplayNames = true,
 ) {
-    // Shared with the chat/document listings: one definition of "projects this
-    // user can see" for everything that scopes a collection query. The private
-    // copy that used to live here had drifted from it — it counted every
-    // project the caller owns including organization ones without running the
-    // organization access check, and it never admitted an organization project
-    // the caller can reach through their membership.
-    const projectIds = await listAccessibleProjectIds(userId, email, db);
+    // The scope helper THROWS when one of its access reads fails, so that a
+    // walled matter can never leak through an unreadable override table. The
+    // GET /audit handler has no try/catch of its own (an unhandled rejection
+    // in an Express 4 handler hangs the request), so the throw is turned into
+    // the same `{ error }` shape a failed events query already returns and
+    // the route answers its generic 500.
+    let projectIds: string[];
+    try {
+        // Shared with the chat/document listings: one definition of
+        // "projects this user can see" for everything that scopes a
+        // collection query.
+        projectIds = await listAccessibleProjectIds(userId, email, db);
+    } catch (err) {
+        // Hand back the underlying PostgREST error when there is one, so the
+        // route's log and the CSV job's retry see code/details/hint exactly
+        // as they would for a failed events read.
+        const cause =
+            err instanceof Error && err.cause && typeof err.cause === "object"
+                ? (err.cause as { message?: string | null })
+                : null;
+        return {
+            data: null,
+            error: cause?.message
+                ? (cause as { message: string })
+                : {
+                      message:
+                          err instanceof Error
+                              ? err.message
+                              : "audit scope read failed",
+                  },
+            count: null,
+        } satisfies EventsResult;
+    }
 
     const applyFilters = (query: EventsQuery): EventsQuery => {
         let next = query;
@@ -254,8 +280,16 @@ export async function queryEvents(
                 merged.set(String(row.id), row);
         }
         const rows = [...merged.values()].sort((a, b) => compareRows(a, b, q));
+        // Each partition contributed its own top-`window` rows, so the merged
+        // order is only guaranteed for the first `window` positions. A page
+        // that starts past the window is empty (as the constant's comment
+        // promises), and a page that straddles it is cut at the window rather
+        // than filled from rows whose global position is unknown.
         result = {
-            data: rows.slice(offset, offset + q.limit),
+            data:
+                offset >= window
+                    ? []
+                    : rows.slice(offset, Math.min(offset + q.limit, window)),
             error: null,
             count,
         };
