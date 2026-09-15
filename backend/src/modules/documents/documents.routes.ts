@@ -305,7 +305,8 @@ documentsRouter.post(
         );
         if (!result.ok) {
             const status =
-                result.kind === "source_not_owner"
+                result.kind === "source_not_owner" ||
+                result.kind === "target_forbidden"
                     ? 403
                     : result.kind === "target_not_found" ||
                         result.kind === "source_not_found" ||

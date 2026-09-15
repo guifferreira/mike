@@ -87,6 +87,7 @@ export async function createVersionFromDocument(
           ok: false;
           kind:
               | "target_not_found"
+              | "target_forbidden"
               | "source_not_found"
               | "source_not_owner"
               | "source_no_active"
@@ -114,11 +115,19 @@ export async function createVersionFromDocument(
     );
     // Adding a version mutates the target, so read access is not enough:
     // a viewer-only workflow share must not be able to write into it.
-    if (!targetAccess.ok || !can(targetAccess.projectRole, "content.edit"))
+    if (!targetAccess.ok)
         return {
             ok: false,
             kind: "target_not_found",
             detail: "Document not found",
+        };
+    // Same split as the version routes: a Viewer who can open the target is
+    // refused with the reason, not told the document vanished.
+    if (!can(targetAccess.projectRole, "content.edit"))
+        return {
+            ok: false,
+            kind: "target_forbidden",
+            detail: DOCUMENT_EDIT_FORBIDDEN,
         };
     const targetDoc = targetAccess.doc;
 
