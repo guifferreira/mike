@@ -2018,6 +2018,84 @@ describe("chat grants, deletion and roster", () => {
         });
     });
 
+    // The route needs exactly one fact about the creator: their email address,
+    // so a grant is never handed to the person who already owns the chat. It
+    // used to get that by reading EVERY user_profiles row in the deployment
+    // into two maps and then looking up a single entry. On a firm-sized
+    // deployment that is the whole address book crossing the wire on every
+    // share click, and it is the only profile read in the file that carries
+    // no predicate at all — which is what makes it visible to this test.
+    it("reads the creator's profile row by id instead of scanning every profile", async () => {
+        const profileQueries: {
+            eq: { mock: { calls: unknown[][] } };
+            in: { mock: { calls: unknown[][] } };
+        }[] = [];
+        mockedCreate.mockImplementation(() => {
+            const db = makeRbacDb(null, "u1", {
+                chat: { project_id: null, org_id: null },
+                profiles: [
+                    {
+                        user_id: "u1",
+                        email: "u1@test.local",
+                        display_name: "Current user",
+                    },
+                    {
+                        user_id: "mate",
+                        email: "mate@example.com",
+                        display_name: "Mate",
+                    },
+                ],
+                chatGrants: [
+                    {
+                        id: "cg-mate",
+                        chat_id: "chat-1",
+                        email: "mate@example.com",
+                        role: "viewer",
+                        created_by: "u1",
+                        created_at: "2026-09-02T00:00:00Z",
+                        updated_at: "2026-09-02T00:00:00Z",
+                    },
+                ],
+            });
+            const originalFrom = db.from;
+            db.from = vi.fn((table: string) => {
+                const query = originalFrom(table);
+                if (table === "user_profiles")
+                    profileQueries.push(
+                        query as unknown as (typeof profileQueries)[number],
+                    );
+                return query;
+            }) as never;
+            return db as never;
+        });
+
+        const res = await request(app)
+            .post("/chat/chat-1/access")
+            .set("Authorization", "Bearer test")
+            .send({ email: "mate@example.com", role: "viewer" });
+
+        // The grant still lands: this is about HOW the creator was resolved,
+        // not about refusing the request.
+        expect(res.status).toBe(201);
+
+        const narrowedBy = profileQueries.map((query) => [
+            ...query.eq.mock.calls.map((call) => call[0] as string),
+            ...query.in.mock.calls.map((call) => call[0] as string),
+        ]);
+        expect(narrowedBy.length).toBeGreaterThan(0);
+        // No read of the profile table may go out without a predicate.
+        expect(
+            narrowedBy.filter((columns) => columns.length === 0),
+            "a user_profiles read went out with no eq/in predicate: that is a full-table scan",
+        ).toEqual([]);
+        // And the creator is fetched by the id the chat already carries,
+        // rather than by reading everyone and filtering in Node.
+        expect(
+            narrowedBy.some((columns) => columns.includes("user_id")),
+            "the creator's profile was never read by user_id",
+        ).toBe(true);
+    });
+
     it("400s when a direct grant targets an unknown user", async () => {
         mockedCreate.mockImplementation(
             () =>
