@@ -221,6 +221,82 @@ describe("UserMemoryPage", () => {
     expect(updateUserMemory).toHaveBeenCalledTimes(1);
   });
 
+  it("clears the refusal notice when memory is turned back on", async () => {
+    // The project modal already did this. On the settings page the "your
+    // changes were not saved" line survived the re-enable and sat next to a
+    // fresh, empty file, reading as if the new file were already failing.
+    vi.mocked(updateUserMemory).mockRejectedValueOnce(
+      new MikeApiError({
+        status: 409,
+        code: "memory_disabled",
+        message: "Enable memory before editing it.",
+      }),
+    );
+    const user = userEvent.setup();
+    render(<UserMemoryPage />);
+    const editor = await screen.findByRole("textbox", {
+      name: "App-wide memory",
+    });
+    vi.mocked(getUserMemory).mockResolvedValue(
+      current({ enabled: false, content: "", hash: null, revision: 5 }),
+    );
+    await user.clear(editor);
+    await user.type(editor, "# Lost");
+    const notice = await screen.findByText(
+      "Memory was turned off while you were editing, so your changes were not saved.",
+      {},
+      { timeout: 2000 },
+    );
+    expect(notice).toBeVisible();
+
+    vi.mocked(setUserMemoryEnabled).mockResolvedValue(
+      current({ enabled: true, content: "", hash: null, revision: 5 }),
+    );
+    await user.click(screen.getByRole("switch", { name: "App-wide memory" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Memory was turned off while you were editing, so your changes were not saved.",
+        ),
+      ).toBeNull(),
+    );
+  });
+
+  it("does not replay a refused draft when the settings page unmounts", async () => {
+    // The unmount flush ran unconditionally: after a refusal it re-sent the
+    // same stale draft with the old revision and failed where nobody could
+    // see it. Only an ordinary pending edit may flush.
+    vi.mocked(updateUserMemory).mockRejectedValueOnce(
+      new MikeApiError({
+        status: 409,
+        code: "memory_disabled",
+        message: "Enable memory before editing it.",
+      }),
+    );
+    const user = userEvent.setup();
+    const { unmount } = render(<UserMemoryPage />);
+    const editor = await screen.findByRole("textbox", {
+      name: "App-wide memory",
+    });
+    vi.mocked(getUserMemory).mockResolvedValue(
+      current({ enabled: false, content: "", hash: null, revision: 5 }),
+    );
+    await user.clear(editor);
+    await user.type(editor, "# Lost");
+    await screen.findByText(
+      "Memory was turned off while you were editing, so your changes were not saved.",
+      {},
+      { timeout: 2000 },
+    );
+    expect(updateUserMemory).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(updateUserMemory).toHaveBeenCalledTimes(1);
+  });
+
   it("adopts server-normalized Markdown without repeatedly saving it", async () => {
     vi.mocked(updateUserMemory).mockResolvedValue(
       current({ content: "# Normalized", revision: 3, hash: "hash-3" }),
