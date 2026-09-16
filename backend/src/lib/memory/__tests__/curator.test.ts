@@ -654,3 +654,71 @@ describe("shared project inactivity debounce", () => {
     ).toBe(true);
   });
 });
+
+describe("memory.consolidate deferral cost", () => {
+  // An active conversation defers its curator job once a quiet window for as
+  // long as it stays active. Claiming the job first meant every one of those
+  // deferrals paid for a status write and two file-status refreshes, then
+  // undid all of it. The gate has to run first: three reads, no writes.
+  function deferringDb() {
+    const rpc = vi.fn(async () => ({ data: true, error: null }));
+    const tables: string[] = [];
+    const future = new Date(Date.now() + 5 * 60_000).toISOString();
+    const rows: Record<string, unknown> = {
+      memory_consolidation_states: {
+        id: "state-1",
+        surface: "chat",
+        conversation_id: "conv-1",
+        actor_user_id: "u1",
+        project_id: null,
+        generation: 2,
+        processed_generation: 1,
+        latest_turn_id: "turn-1",
+      },
+      memory_conversation_activity: {
+        generation: 5,
+        quiet_until: future,
+        deleted_at: null,
+      },
+      memory_conversation_turn_leases: { expires_at: future },
+    };
+    function from(table: string) {
+      tables.push(table);
+      const q: Record<string, unknown> = {};
+      for (const m of ["select", "eq", "gt", "lt", "order", "limit", "update", "in"])
+        q[m] = vi.fn(() => q);
+      q.maybeSingle = vi.fn(async () => ({
+        data: rows[table] ?? null,
+        error: null,
+      }));
+      q.then = (resolve: (v: unknown) => unknown) =>
+        Promise.resolve({ data: [], error: null }).then(resolve);
+      return q;
+    }
+    return { db: { from: vi.fn(from), rpc }, rpc, tables };
+  }
+
+  it("defers without claiming the job or rewriting any file status", async () => {
+    const { db, rpc, tables } = deferringDb();
+    const { handleMemoryConsolidation } = await import("../curator");
+    const { DbJobDeferredError } = await import("../../dbq/types");
+
+    await expect(
+      handleMemoryConsolidation(db as never, {
+        id: "job-1",
+        kind: "memory.consolidate",
+        payload: {
+          stateId: "state-1",
+          generation: 2,
+          conversationGeneration: 5,
+          appEpoch: 1,
+          actorUserId: "u1",
+        },
+      } as never),
+    ).rejects.toBeInstanceOf(DbJobDeferredError);
+
+    // No set_memory_consolidation_status claim, and no memory_files writes.
+    expect(rpc).not.toHaveBeenCalled();
+    expect(tables).not.toContain("memory_files");
+  });
+});

@@ -44,6 +44,9 @@ const {
         terminalUpdateAttempts: 0,
         terminalUpdateGate: null as Promise<void> | null,
         wordChatMissing: false,
+        // Makes the chat_access_grants probe behind hasDirectContentGrants
+        // fail, which is how a transient DB error reaches the route.
+        failContentGrantLookup: false,
         // When set, selects on chat_messages resolve against these rows with
         // the eq/not/order/limit chain genuinely applied (a mini query
         // engine), so tests can prove which assistant row a query picks.
@@ -174,6 +177,15 @@ function makeQuery(table: string) {
     reject?: (e: unknown) => unknown,
     ) => {
         const resolveQuery = async () => {
+            if (
+                dbControl.failContentGrantLookup &&
+                table === "chat_access_grants"
+            ) {
+                return {
+                    data: null,
+                    error: { message: "grants relation unavailable" },
+                };
+            }
             if (activeUpdate?.table === "chat_messages") {
                 dbControl.terminalUpdateAttempts += 1;
                 if (dbControl.terminalUpdateGate) {
@@ -353,6 +365,7 @@ describe("POST /chat — streaming endpoint", () => {
         dbControl.terminalUpdateAttempts = 0;
         dbControl.terminalUpdateGate = null;
         dbControl.wordChatMissing = false;
+        dbControl.failContentGrantLookup = false;
         dbControl.assistantMessageRows = null;
         runLLMStream.mockResolvedValue({
             fullText: "hi there",
@@ -478,6 +491,29 @@ describe("POST /chat — streaming endpoint", () => {
     expect(runLLMStream).not.toHaveBeenCalled();
     expect(beginMemoryConversationTurn).not.toHaveBeenCalled();
     expect(scheduleMemoryConsolidation).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("answers a sanitized 500 when the shared-audience probe fails", async () => {
+    // hasDirectContentGrants throws on a database error and the memory
+    // eligibility block awaited it outside any try/catch. On Express 5 (this
+    // repo) the rejection reaches handleUnhandledError, so the request is
+    // answered either way; the route-level catch keeps the failure
+    // attributable to this call site. Either way the contract below must
+    // hold: a sanitized 500, no stream started, no internals leaked.
+    dbControl.failContentGrantLookup = true;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await request(app)
+      .post("/chat")
+      .set("Authorization", "Bearer test")
+      .send({ ...VALID_BODY, chat_id: "chat-1" });
+
+    expect(res.status).toBe(500);
+    expect(res.body.detail).toBe("Something went wrong. Please try again.");
+    // The internal message never reaches the client.
+    expect(JSON.stringify(res.body)).not.toContain("grants relation");
+    expect(runLLMStream).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });
 
