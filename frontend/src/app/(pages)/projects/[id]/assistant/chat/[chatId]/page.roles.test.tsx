@@ -195,7 +195,6 @@ beforeEach(() => {
     deleteChat.mockResolvedValue(undefined);
     renameChatInHistory.mockResolvedValue(undefined);
     getChat.mockResolvedValue(chatDetail());
-    vi.spyOn(window, "prompt").mockReturnValue("Renamed thread");
 });
 
 describe("project chat page — the project ladder, not the creator", () => {
@@ -247,7 +246,11 @@ describe("project chat page — the project ladder, not the creator", () => {
 
         expect(await screen.findByText("Editors only")).toBeInTheDocument();
         expect(renameChatInHistory).not.toHaveBeenCalled();
-        expect(window.prompt).not.toHaveBeenCalled();
+        // The refusal comes before the inline editor opens, so a viewer never
+        // gets a title field to type a rename into.
+        expect(
+            screen.queryByLabelText("Chat title"),
+        ).not.toBeInTheDocument();
     });
 
     it("raises no refusal while the project role is still unknown", async () => {
@@ -327,7 +330,12 @@ describe("project chat page — refused mutations are surfaced", () => {
         );
         await renderPage();
 
+        // Rename is a two-step inline edit on this header: the menu item opens
+        // the title field, and committing it is what calls the server.
         fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+        const field = await screen.findByLabelText("Chat title");
+        fireEvent.change(field, { target: { value: "Renamed thread" } });
+        fireEvent.keyDown(field, { key: "Enter" });
 
         expect(await screen.findByText("Chat not renamed")).toBeInTheDocument();
         expect(
