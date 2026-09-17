@@ -13,6 +13,8 @@ COPY backend/ ./
 COPY packages/contracts /packages/contracts
 RUN npm run build
 
-ENV NODE_ENV=production
+# --enable-source-maps: every entrypoint in this image (API, worker,
+# sync:workflows) reports stack frames as src/*.ts lines, not dist/*.js.
+ENV NODE_ENV=production NODE_OPTIONS=--enable-source-maps
 EXPOSE 3001
 CMD ["npm", "start"]
