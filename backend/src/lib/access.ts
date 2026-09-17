@@ -629,6 +629,7 @@ async function pageProjectRows<T>(
         data: T[] | null;
         error?: { message?: string | null } | null;
     }>,
+    readDescription = "project page read",
 ): Promise<T[]> {
     const rows: T[] = [];
     for (let page = 0; page < ACCESSIBLE_PROJECTS_MAX_PAGES; page += 1) {
@@ -637,12 +638,15 @@ async function pageProjectRows<T>(
             from,
             from + ACCESSIBLE_PROJECTS_PAGE_SIZE - 1,
         );
-        if (error) throw accessReadFailed("project page read", error);
+        if (error) throw accessReadFailed(readDescription, error);
         const batch = (data ?? []) as T[];
         rows.push(...batch);
-        if (batch.length < ACCESSIBLE_PROJECTS_PAGE_SIZE) break;
+        if (batch.length < ACCESSIBLE_PROJECTS_PAGE_SIZE) return rows;
     }
-    return rows;
+    // Partial deny results are unsafe: an omitted denial looks like access.
+    throw accessReadFailed(readDescription, {
+        message: "Pagination limit reached",
+    });
 }
 
 /**
@@ -650,7 +654,7 @@ async function pageProjectRows<T>(
  * any project they hold an access grant on, and any project in an org they
  * belong to. Used to scope chat lists and similar collection queries.
  *
- * Written as THREE bounded, paged reads plus ONE batched override read, and
+ * Written as bounded, paged project and override reads, and
  * deliberately not as `checkProjectAccess` per row. The previous shape issued
  * an unordered, unpaged `.in("org_id", …)` — silently truncated by PostgREST's
  * db-max-rows, so a large firm's audit trail simply lost the projects past the
@@ -746,33 +750,25 @@ export async function listAccessibleProjectIds(
                           org_id: string;
                       }[],
                   ),
-            // One read for every deny this caller holds anywhere in their
-            // orgs, instead of one verdict per project. Scoped by org_id so
-            // the filter is bounded by membership rather than by a list of
-            // every candidate project id.
+            // Page the denials as well as the projects. A capped deny response
+            // otherwise admits walled matters beyond the first 1,000 rows.
             orgIds.length
-                ? db
-                      .from("project_org_access_overrides")
-                      .select("project_id")
-                      .in("org_id", orgIds)
-                      .eq("user_id", userId)
-                      .eq("role", "deny")
-                : Promise.resolve({
-                      data: [] as { project_id?: string | null }[],
-                      error: null,
-                  }),
+                ? pageProjectRows<{ project_id: string }>(
+                      (from, to) =>
+                          db
+                              .from("project_org_access_overrides")
+                              .select("project_id")
+                              .in("org_id", orgIds)
+                              .eq("user_id", userId)
+                              .eq("role", "deny")
+                              .order("project_id", { ascending: true })
+                              .range(from, to),
+                      "deny override read",
+                  )
+                : Promise.resolve([] as { project_id: string }[]),
         ]);
 
-    // Fail CLOSED: with the override table unreadable there is no way to tell
-    // a walled matter from an open one, so the caller gets an error, not a
-    // scope that quietly includes the walled ones.
-    if (denials.error)
-        throw accessReadFailed("deny override read", denials.error);
-    const deniedProjectIds = new Set(
-        ((denials.data ?? []) as { project_id?: string | null }[])
-            .map((row) => row.project_id)
-            .filter((id): id is string => !!id),
-    );
+    const deniedProjectIds = new Set(denials.map((row) => row.project_id));
 
     const ids = new Set<string>();
     for (const project of personalOwned) ids.add(project.id);

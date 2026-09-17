@@ -240,7 +240,7 @@ function makeDb(
                 column: string,
                 options: { ascending: boolean; nullsFirst: boolean },
             ) => {
-                calls.order = [column, options];
+                if (column !== "id") calls.order = [column, options];
                 return b;
             },
             range: () =>

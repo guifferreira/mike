@@ -16,11 +16,16 @@ type Row = Record<string, unknown>;
 
 function makeDb(
     tables: Record<string, Row[]>,
-    options: { selectErrors?: Record<string, string> } = {},
+    options: {
+        selectErrors?: Record<string, string>;
+        maxRows?: number;
+        pageError?: (table: string, from: number) => string | undefined;
+    } = {},
 ) {
     return {
         from(table: string) {
             let rows = [...(tables[table] ?? [])];
+            let pageFrom = 0;
             const failure = options.selectErrors?.[table]
                 ? { message: options.selectErrors[table] }
                 : null;
@@ -34,6 +39,7 @@ function makeDb(
                 // Paged reads: `.range(from, to)` is inclusive at both ends,
                 // and returning a short page is what stops the caller's loop.
                 range: (from: number, to: number) => {
+                    pageFrom = from;
                     rows = rows.slice(from, to + 1);
                     return query;
                 },
@@ -81,9 +87,23 @@ function makeDb(
                     reject?: (reason: unknown) => unknown,
                 ) =>
                     Promise.resolve(
-                        failure
-                            ? { data: null, error: failure }
-                            : { data: rows, error: null },
+                        failure || options.pageError?.(table, pageFrom)
+                            ? {
+                                  data: null,
+                                  error: failure ?? {
+                                      message: options.pageError!(
+                                          table,
+                                          pageFrom,
+                                      )!,
+                                  },
+                              }
+                            : {
+                                  data: rows.slice(
+                                      0,
+                                      options.maxRows ?? rows.length,
+                                  ),
+                                  error: null,
+                              },
                     ).then(resolve, reject),
             };
             return query;
@@ -1074,5 +1094,48 @@ describe("listAccessibleProjectIds fails closed", () => {
         await expect(
             listAccessibleProjectIds("u1", "u1@example.com", db),
         ).rejects.toThrow(/org membership read failed: permission denied/);
+    });
+});
+
+describe("listAccessibleProjectIds with capped deny responses", () => {
+    const projects = Array.from({ length: 1001 }, (_, index) => ({
+        id: `denied-${String(index).padStart(4, "0")}`,
+        user_id: "colleague",
+        org_id: "firm",
+    }));
+    const tables = {
+        org_members: [{ org_id: "firm", user_id: "member", role: "member" }],
+        projects: [
+            ...projects,
+            { id: "open", user_id: "colleague", org_id: "firm" },
+        ],
+        project_org_access_overrides: projects.map((project) => ({
+            project_id: project.id,
+            org_id: "firm",
+            user_id: "member",
+            role: "deny",
+        })),
+    };
+
+    it("keeps every denied matter out of the audit scope beyond 1,000 denials", async () => {
+        const ids = await listAccessibleProjectIds(
+            "member",
+            undefined,
+            makeDb(tables, { maxRows: 1000 }),
+        );
+        expect(ids).toEqual(["open"]);
+    });
+
+    it("fails closed if a later deny page cannot be read", async () => {
+        const db = makeDb(tables, {
+            maxRows: 1000,
+            pageError: (table, from) =>
+                table === "project_org_access_overrides" && from === 1000
+                    ? "statement timeout"
+                    : undefined,
+        });
+        await expect(
+            listAccessibleProjectIds("member", undefined, db),
+        ).rejects.toThrow(/deny override read failed: statement timeout/);
     });
 });

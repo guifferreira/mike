@@ -163,6 +163,33 @@ function chunk<T>(values: T[], size: number): T[][] {
     return out;
 }
 
+// PostgREST caps each response independently of the requested range. Read
+// through the complete requested window, advancing by the actual row count so
+// deployments with a lower cap work too. A failed page invalidates the result.
+const AUDIT_READ_PAGE_SIZE = 1000;
+
+async function readEventWindow(
+    makeQuery: () => EventsQuery,
+    from: number,
+    limit: number,
+): Promise<EventsResult> {
+    const rows: AuditRow[] = [];
+    let count: number | null = null;
+    while (rows.length < limit) {
+        const offset = from + rows.length;
+        const to =
+            offset + Math.min(AUDIT_READ_PAGE_SIZE, limit - rows.length) - 1;
+        const result = await makeQuery().range(offset, to);
+        if (result.error) return { ...result, data: null };
+        count ??= result.count ?? null;
+        const batch = result.data ?? [];
+        rows.push(...batch);
+        if (!batch.length || (count !== null && from + rows.length >= count))
+            break;
+    }
+    return { data: rows, error: null, count };
+}
+
 /** Order two rows the way the database was asked to order them. */
 function compareRows(a: AuditRow, b: AuditRow, q: AuditQuery): number {
     const left = a[q.sortBy];
@@ -234,7 +261,7 @@ export async function queryEvents(
         return next.order(q.sortBy, {
             ascending: q.sortDirection === "asc",
             nullsFirst: false,
-        });
+        }).order("id", { ascending: true, nullsFirst: false });
     };
 
     const base = () =>
@@ -248,9 +275,10 @@ export async function queryEvents(
     let result: EventsResult;
 
     if (projectIds.length === 0) {
-        result = await applyFilters(base().eq("user_id", userId)).range(
+        result = await readEventWindow(
+            () => applyFilters(base().eq("user_id", userId)),
             offset,
-            offset + q.limit - 1,
+            q.limit,
         );
     } else {
         // The caller's OWN events and the events of projects they can reach
@@ -261,11 +289,20 @@ export async function queryEvents(
         const window = Math.min(offset + q.limit, MERGE_WINDOW_ROWS);
         const notTheCaller = `user_id.is.null,user_id.neq.${userId}`;
         const responses: EventsResult[] = await Promise.all([
-            applyFilters(base().eq("user_id", userId)).range(0, window - 1),
+            readEventWindow(
+                () => applyFilters(base().eq("user_id", userId)),
+                0,
+                window,
+            ),
             ...chunk(projectIds, PROJECT_FILTER_CHUNK).map((ids) =>
-                applyFilters(
-                    base().in("project_id", ids).or(notTheCaller),
-                ).range(0, window - 1),
+                readEventWindow(
+                    () =>
+                        applyFilters(
+                            base().in("project_id", ids).or(notTheCaller),
+                        ),
+                    0,
+                    window,
+                ),
             ),
         ]);
 
