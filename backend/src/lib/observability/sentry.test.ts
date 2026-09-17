@@ -51,6 +51,7 @@ import * as Sentry from "@sentry/node";
 import {
   flushSentry,
   initSentry,
+  redactUrl,
   isSentryEnabled,
   reportError,
   reportMessage,
@@ -264,7 +265,7 @@ describe("scrubEvent", () => {
       logger: "console",
       message: "[library] failed to load [object Object]",
       extra: { arguments: ["[library] failed to load", { error: "<normalised>" }] },
-    } as Parameters<typeof scrubEvent>[0];
+    } as unknown as Parameters<typeof scrubEvent>[0];
 
     const scrubbed = scrubEvent(event, {
       captureContext: {
@@ -470,5 +471,78 @@ describe("request context helpers", () => {
     } as NodeJS.ProcessEnv);
     sentryMock.flush.mockRejectedValueOnce(new Error("transport down"));
     await expect(flushSentry()).resolves.toBeUndefined();
+  });
+});
+
+describe("redactUrl", () => {
+  it("filters the download token path segment and keeps the rest of the path", () => {
+    expect(redactUrl("/download/eyJhbGciOi.abc?inline=1")).toBe(
+      "/download/[Filtered]?inline=1",
+    );
+    expect(redactUrl("https://api.example.com/download/tok")).toBe(
+      "https://api.example.com/download/[Filtered]",
+    );
+  });
+
+  it("filters OAuth callback codes, credential-looking params, and presigned signature fields", () => {
+    expect(
+      redactUrl("/user/oauth/callback?code=AUTH-CODE&state=STATE&provider=google"),
+    ).toBe("/user/oauth/callback?code=[Filtered]&state=[Filtered]&provider=google");
+    expect(
+      redactUrl(
+        "https://s3.local/mike/docs/a.pdf?X-Amz-Signature=deadbeef&X-Amz-Credential=AKIA%2Fus&X-Amz-Expires=60",
+      ),
+    ).toBe(
+      "https://s3.local/mike/docs/a.pdf?X-Amz-Signature=[Filtered]&X-Amz-Credential=[Filtered]&X-Amz-Expires=60",
+    );
+  });
+
+  it("leaves ordinary URLs untouched", () => {
+    expect(redactUrl("/projects/8f1c/documents?limit=20&cursor=abc")).toBe(
+      "/projects/8f1c/documents?limit=20&cursor=abc",
+    );
+  });
+});
+
+describe("scrubEvent URL hygiene", () => {
+  it("redacts the request URL, the query string, url-shaped extras, and breadcrumb URLs", () => {
+    const event = {
+      request: {
+        url: "http://localhost:3001/download/secret-token?x=1",
+        query_string: "code=AUTHCODE&page=2",
+        headers: {},
+      },
+      extra: { path: "/user/oauth/callback?code=AUTHCODE&state=S" },
+      breadcrumbs: [
+        {
+          category: "http",
+          data: {
+            url: "https://s3.local/b/k?X-Amz-Signature=sig&X-Amz-Expires=60",
+            method: "GET",
+          },
+        },
+      ],
+    } as unknown as Sentry.ErrorEvent;
+
+    const out = scrubEvent(event, {})!;
+
+    expect(out.request?.url).toBe(
+      "http://localhost:3001/download/[Filtered]?x=1",
+    );
+    expect(out.request?.query_string).toBe("code=[Filtered]&page=2");
+    expect(out.extra?.path).toBe(
+      "/user/oauth/callback?code=[Filtered]&state=[Filtered]",
+    );
+    expect(out.breadcrumbs?.[0]?.data?.url).toBe(
+      "https://s3.local/b/k?X-Amz-Signature=[Filtered]&X-Amz-Expires=60",
+    );
+  });
+
+  it("filters credential keys when the SDK hands the query over as a map", () => {
+    const event = {
+      request: { query_string: { code: "AUTH", page: "2" } },
+    } as unknown as Sentry.ErrorEvent;
+    const out = scrubEvent(event, {})!;
+    expect(out.request?.query_string).toEqual({ code: "[Filtered]", page: "2" });
   });
 });

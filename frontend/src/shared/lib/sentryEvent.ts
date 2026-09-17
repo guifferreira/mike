@@ -30,6 +30,89 @@ const SENSITIVE_KEY_PATTERN =
     /(token|secret|password|passwd|authorization|cookie|api[-_]?key|credential|private[-_]?key)/i;
 const MAX_DEPTH = 6;
 
+/**
+ * Query parameters whose VALUE is a credential, plus the two OAuth callback
+ * parameters (an authorization code is single-use but still a credential
+ * until it is exchanged) and S3 presigned-URL signature fields.
+ */
+const SENSITIVE_QUERY_PATTERN =
+    /(token|secret|password|passwd|authorization|cookie|api[-_]?key|credential|private[-_]?key|signature|^code$|^state$|^sig$|^x-amz-(signature|credential|security-token)$)/i;
+/** Path segments whose NEXT segment is a token: GET /download/<token>. */
+const TOKEN_PATH_SEGMENTS = new Set(["download"]);
+/** Object keys whose string value is a URL and must go through redactUrl. */
+const URL_KEY_PATTERN =
+    /^(url|href|path|query_string|referer|referrer|location|redirect(_uri)?)$/i;
+
+/**
+ * Strip credentials from a URL or path while keeping it recognisable:
+ * `/download/<token>` → `/download/[Filtered]`, `?code=…&state=…` →
+ * `?code=[Filtered]&state=[Filtered]`. The SDK's request integration puts
+ * the full URL and query string on every HTTP event and the breadcrumb
+ * integration records outgoing request URLs, so this is the only way a
+ * download token, an OAuth code, or a presigned storage URL stays out of
+ * Sentry.
+ */
+export function redactUrl(value: string): string {
+    const queryStart = value.indexOf("?");
+    const pathPart = queryStart === -1 ? value : value.slice(0, queryStart);
+    const query = queryStart === -1 ? null : value.slice(queryStart + 1);
+    const segments = pathPart.split("/");
+    for (let i = 0; i < segments.length - 1; i += 1) {
+        const segment = segments[i];
+        if (
+            segment !== undefined &&
+            TOKEN_PATH_SEGMENTS.has(segment) &&
+            segments[i + 1]
+        ) {
+            segments[i + 1] = "[Filtered]";
+        }
+    }
+    let out = segments.join("/");
+    if (query !== null) {
+        out += `?${redactQueryString(query)}`;
+    }
+    return out;
+}
+
+function redactQueryString(query: string): string {
+    return query
+        .split("&")
+        .map((pair) => {
+            const eq = pair.indexOf("=");
+            const key = eq === -1 ? pair : pair.slice(0, eq);
+            let name = key;
+            try {
+                name = decodeURIComponent(key);
+            } catch {
+                // Keep the raw key; it still gets pattern-matched below.
+            }
+            return SENSITIVE_QUERY_PATTERN.test(name) ? `${key}=[Filtered]` : pair;
+        })
+        .join("&");
+}
+
+/** The SDK may hand query parameters over as a string, a map, or pairs. */
+function redactQueryParams(value: unknown): unknown {
+    if (typeof value === "string") return redactQueryString(value);
+    if (Array.isArray(value)) {
+        return value.map((entry) =>
+            Array.isArray(entry) && typeof entry[0] === "string"
+                ? SENSITIVE_QUERY_PATTERN.test(entry[0])
+                    ? [entry[0], "[Filtered]"]
+                    : entry
+                : entry,
+        );
+    }
+    if (value && typeof value === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value as object)) {
+            out[key] = SENSITIVE_QUERY_PATTERN.test(key) ? "[Filtered]" : entry;
+        }
+        return out;
+    }
+    return value;
+}
+
 /** The pieces of a Sentry event this module reads or rewrites. */
 // No index signatures: the SDKs' `ErrorEvent` is an interface, and an
 // interface is not assignable to an indexable type, so the shape below must
@@ -51,6 +134,8 @@ export type ScrubbableEvent = {
         data?: unknown;
         cookies?: unknown;
         headers?: Record<string, string>;
+        url?: string;
+        query_string?: unknown;
     };
     user?: { id?: string | number };
     extra?: Record<string, unknown>;
@@ -104,7 +189,9 @@ export function redactSensitiveValues(value: unknown, depth = 0): unknown {
         for (const [key, entry] of Object.entries(value as object)) {
             out[key] = SENSITIVE_KEY_PATTERN.test(key)
                 ? "[Filtered]"
-                : redactSensitiveValues(entry, depth + 1);
+                : URL_KEY_PATTERN.test(key) && typeof entry === "string"
+                  ? redactUrl(entry)
+                  : redactSensitiveValues(entry, depth + 1);
         }
         return out;
     }
@@ -213,6 +300,15 @@ export function createEventScrubber(options?: {
         if (event.request) {
             delete event.request.data;
             delete event.request.cookies;
+            // The URL stays (it says which endpoint), its credentials do not.
+            if (typeof event.request.url === "string") {
+                event.request.url = redactUrl(event.request.url);
+            }
+            if (event.request.query_string !== undefined) {
+                event.request.query_string = redactQueryParams(
+                    event.request.query_string,
+                );
+            }
             if (event.request.headers) {
                 for (const name of Object.keys(event.request.headers)) {
                     if (SENSITIVE_HEADERS.has(name.toLowerCase())) {

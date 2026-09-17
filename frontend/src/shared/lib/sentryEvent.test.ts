@@ -6,6 +6,7 @@ import {
     normalizeApiPath,
     parseSampleRate,
     redactSensitiveValues,
+    redactUrl,
 } from "./sentryEvent";
 
 describe("redactSensitiveValues", () => {
@@ -224,5 +225,69 @@ describe("parseSampleRate", () => {
         expect(parseSampleRate("5", 0)).toBe(1);
         expect(parseSampleRate("-1", 0)).toBe(0);
         expect(parseSampleRate("0.5", 0)).toBe(0.5);
+    });
+});
+
+describe("redactUrl", () => {
+    it("filters the download token segment and credential-looking query params", () => {
+        expect(redactUrl("/api/download/tok-123?inline=1")).toBe(
+            "/api/download/[Filtered]?inline=1",
+        );
+        expect(
+            redactUrl("/api/user/oauth/callback?code=AUTH&state=S&provider=google"),
+        ).toBe("/api/user/oauth/callback?code=[Filtered]&state=[Filtered]&provider=google");
+        expect(redactUrl("/api/projects/1/documents?limit=20")).toBe(
+            "/api/projects/1/documents?limit=20",
+        );
+    });
+});
+
+describe("scrubEvent URL hygiene", () => {
+    it("redacts request url, query string, url-shaped extras and breadcrumb urls", () => {
+        const { scrubEvent } = createEventScrubber();
+        const out = scrubEvent({
+            request: {
+                url: "https://app.local/api/download/tok?x=1",
+                query_string: "code=AUTH&x=1",
+            },
+            extra: { path: "/api/download/tok" },
+            breadcrumbs: [
+                {
+                    data: {
+                        url: "https://s3.local/b/k?X-Amz-Signature=sig&X-Amz-Expires=60",
+                    },
+                },
+            ],
+        })!;
+        expect(out.request?.url).toBe("https://app.local/api/download/[Filtered]?x=1");
+        expect(out.request?.query_string).toBe("code=[Filtered]&x=1");
+        expect(out.extra?.path).toBe("/api/download/[Filtered]");
+        expect(out.breadcrumbs?.[0]?.data?.url).toBe(
+            "https://s3.local/b/k?X-Amz-Signature=[Filtered]&X-Amz-Expires=60",
+        );
+    });
+});
+
+describe("query parameter forms", () => {
+    it("filters credential keys whether the SDK sends a string, a map, or pairs", () => {
+        const { scrubEvent } = createEventScrubber();
+        const asMap = scrubEvent({ request: { query_string: { code: "A", page: "2" } } })!;
+        expect(asMap.request?.query_string).toEqual({ code: "[Filtered]", page: "2" });
+        const asPairs = scrubEvent({
+            request: { query_string: [["token", "T"], ["page", "2"], ["odd"], [1, "x"]] },
+        })!;
+        expect(asPairs.request?.query_string).toEqual([
+            ["token", "[Filtered]"],
+            ["page", "2"],
+            ["odd"],
+            [1, "x"],
+        ]);
+        const other = scrubEvent({ request: { query_string: 42 } })!;
+        expect(other.request?.query_string).toBe(42);
+    });
+
+    it("still filters a key whose percent-encoding is malformed", () => {
+        expect(redactUrl("/x?%E0token=abc&ok=1")).toBe("/x?%E0token=[Filtered]&ok=1");
+        expect(redactUrl("/x?flag&token=abc")).toBe("/x?flag&token=[Filtered]");
     });
 });
