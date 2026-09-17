@@ -700,8 +700,8 @@ describe("memory.consolidate deferral cost", () => {
 
   it("defers without claiming the job or rewriting any file status", async () => {
     const { db, rpc, tables } = deferringDb();
-    const { handleMemoryConsolidation } = await import("../curator");
-    const { DbJobDeferredError } = await import("../../dbq/types");
+    const { handleMemoryConsolidation } = await import("../../../modules/memory/memory.curator.js");
+    const { DbJobDeferredError } = await import("../../dbq/types.js");
 
     await expect(
       handleMemoryConsolidation(db as never, {
