@@ -6,18 +6,21 @@ import request from "supertest";
 const reportError = vi.hoisted(() => vi.fn(() => "event-1"));
 const reportMessage = vi.hoisted(() => vi.fn(() => "event-2"));
 const tagCurrentRequest = vi.hoisted(() => vi.fn());
-vi.mock("../../lib/observability/sentry", () => ({
+vi.mock("../../lib/observability/sentry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/observability/sentry")>()),
   reportError,
   reportMessage,
   tagCurrentRequest,
   setCurrentUser: vi.fn(),
 }));
 
-let app: typeof import("../../app").app;
+import type { app as builtApp } from "../../app";
+
+let app: typeof builtApp;
 
 beforeAll(async () => {
   process.env.SENTRY_ENABLE_TEST_ROUTE = "true";
-  ({ app } = await import("../../app"));
+  ({ app } = await import("../../app.js"));
 });
 
 afterAll(() => {

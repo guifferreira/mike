@@ -375,6 +375,36 @@ export function reportMessage(
   });
 }
 
+/**
+ * The Express route PATTERN a request matched, with its mount point:
+ * `/projects/:projectId`, not `/projects/8f1c…`. Used as the grouping tag on
+ * every HTTP event so one bug is one issue however many resources it hits.
+ *
+ * `req.route.path` alone is only the router-relative part — `/:id` for both
+ * GET /projects/:id and GET /documents/:id — so it must be joined with
+ * `req.baseUrl` or unrelated endpoints collapse into one issue. A request
+ * that matched no route (404s, errors thrown in app-level middleware) has no
+ * pattern; the concrete path minus its query string is the best we have.
+ */
+export function requestRoutePattern(
+  req:
+    | {
+        baseUrl?: string;
+        route?: { path?: unknown };
+        originalUrl?: string;
+      }
+    | undefined,
+): string | undefined {
+  if (!req) return undefined;
+  const base = req.baseUrl ?? "";
+  const path = req.route?.path;
+  if (typeof path === "string") {
+    return path === "/" && base ? base : `${base}${path}`;
+  }
+  const concrete = req.originalUrl?.split("?")[0];
+  return concrete ? `${concrete}` : base || undefined;
+}
+
 /** Attach the request id to every event captured during this request. */
 export function tagCurrentRequest(requestId: string): void {
   if (!initialized) return;

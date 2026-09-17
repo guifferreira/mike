@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const reportError = vi.hoisted(() => vi.fn(() => "event-1"));
-vi.mock("./observability/sentry", () => ({ reportError }));
+vi.mock("./observability/sentry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./observability/sentry")>()),
+  reportError,
+}));
 
 import express from "express";
 import request from "supertest";
@@ -13,9 +16,14 @@ function appThatFails(error: unknown, status?: number) {
     res.locals.requestId = "req-abc";
     next();
   });
-  app.get("/projects/:projectId", (_req, res) => {
+  // Mounted the way app.ts mounts every feature router: the route pattern
+  // Sentry sees must include the mount point, or /projects/:projectId and
+  // /documents/:id would both report as "/:id".
+  const projects = express.Router();
+  projects.get("/:projectId", (_req, res) => {
     sendInternalError(res, error, status);
   });
+  app.use("/projects", projects);
   return app;
 }
 
@@ -46,7 +54,8 @@ describe("sendInternalError", () => {
         http_status: 500,
         request_id: "req-abc",
         http_method: "GET",
-        // Grouping key: the Express route pattern, not the concrete URL.
+        // Grouping key: the MOUNTED Express route pattern, not the concrete
+        // URL and not the router-relative "/:projectId".
         http_route: "/projects/:projectId",
       },
       extra: { path: "/projects/p-123?x=1" },

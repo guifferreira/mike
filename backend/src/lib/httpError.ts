@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { reportError } from "./observability/sentry";
+import { reportError, requestRoutePattern } from "./observability/sentry";
 
 export const INTERNAL_ERROR_CODE = "internal_error";
 export const INTERNAL_ERROR_MESSAGE =
@@ -24,9 +24,9 @@ export function sendInternalError(
       http_status: status,
       request_id: requestId,
       http_method: res.req?.method,
-      // The route pattern, not the URL: /projects/:projectId groups as one
-      // issue instead of one per project.
-      http_route: res.req?.route?.path ?? res.req?.originalUrl?.split("?")[0],
+      // The mounted route pattern, not the URL: /projects/:projectId groups
+      // as one issue instead of one per project.
+      http_route: requestRoutePattern(res.req),
     },
     extra: { path: res.req?.originalUrl },
   });

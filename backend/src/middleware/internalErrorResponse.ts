@@ -9,7 +9,10 @@ import {
   INTERNAL_ERROR_MESSAGE,
   sendInternalError,
 } from "../lib/httpError";
-import { reportMessage } from "../lib/observability/sentry";
+import {
+  reportMessage,
+  requestRoutePattern,
+} from "../lib/observability/sentry";
 
 type ErrorBody = {
   code?: unknown;
@@ -55,6 +58,7 @@ export function protectInternalErrorResponses(
     // sendInternalError: still a server failure, still a Sentry event. The
     // detail is the developer's message (never shown to the client), so it
     // is the best title we have.
+    const route = requestRoutePattern(req);
     reportMessage(
       typeof errorBody?.detail === "string"
         ? errorBody.detail
@@ -65,14 +69,10 @@ export function protectInternalErrorResponses(
           http_status: res.statusCode,
           request_id: requestId,
           http_method: req.method,
-          http_route: req.route?.path ?? req.originalUrl.split("?")[0],
+          http_route: route,
         },
         extra: { path: req.originalUrl, body: errorBody ?? body },
-        fingerprint: [
-          "sanitized-5xx",
-          req.method,
-          req.route?.path ?? req.originalUrl.split("?")[0],
-        ],
+        fingerprint: ["sanitized-5xx", req.method, route ?? ""],
       },
     );
     console.error("[http/sanitized-internal-error]", {
