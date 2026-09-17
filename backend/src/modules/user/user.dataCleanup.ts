@@ -1,6 +1,6 @@
 import { captureInlineDocumentCleanup, completeInlineDocumentCleanup } from "../documents/documents.service";
 import { type Db } from "../../lib/supabase";
-import { assertStorageConfigured, deleteFile, listFiles } from "../../lib/storage";
+import { assertStorageConfigured, deleteFile, deleteFileBestEffort, listFiles } from "../../lib/storage";
 import { NonRetryableJobError } from "../../lib/dbq/runner";
 import { removeGrantsForEmail } from "../../lib/projectAccess";
 import { removeContentGrantsForEmail } from "../../lib/contentAccess";
@@ -505,7 +505,9 @@ async function deleteOrphanedUserStorage(db: Db, userId: string) {
         await Promise.all(
             paths
                 .filter((path) => !claimed.has(path))
-                .map((path) => deleteFile(path).catch(() => {})),
+                .map((path) =>
+                    deleteFileBestEffort(path, "user-prefix-cleanup"),
+                ),
         );
     } catch {
         // Version-linked objects are deleted above. Prefix cleanup is best-effort

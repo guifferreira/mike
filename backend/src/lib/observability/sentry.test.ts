@@ -53,6 +53,7 @@ vi.mock("@sentry/node", () => ({
 
 import * as Sentry from "@sentry/node";
 import {
+  bestEffort,
   flushSentry,
   initSentry,
   redactUrl,
@@ -553,5 +554,52 @@ describe("scrubEvent URL hygiene", () => {
     } as unknown as Sentry.ErrorEvent;
     const out = scrubEvent(event, {})!;
     expect(out.request?.query_string).toEqual({ code: "[Filtered]", page: "2" });
+  });
+});
+
+describe("bestEffort", () => {
+  beforeEach(() => {
+    resetSentryForTests();
+    initSentry("worker", {
+      ...quietEnv,
+      SENTRY_DSN: "https://key@o1.ingest.sentry.io/1",
+    } as NodeJS.ProcessEnv);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  it("passes a resolved value straight through and reports nothing", async () => {
+    await expect(
+      bestEffort(Promise.resolve(42), { what: "storage-delete:test" }),
+    ).resolves.toBe(42);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it("turns a rejection into a warning grouped by `what`, warns once, and resolves undefined", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failure = new Error("AccessDenied");
+
+    await expect(
+      bestEffort(Promise.reject(failure), {
+        what: "storage-delete:copy-rollback",
+        tags: { component: "storage", stage: "copy-rollback" },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(Sentry.captureException).toHaveBeenCalledWith(failure);
+    const scope = scopes.at(-1)!;
+    expect(scope.setLevel).toHaveBeenCalledWith("warning");
+    expect(scope.setFingerprint).toHaveBeenCalledWith([
+      "best-effort",
+      "storage-delete:copy-rollback",
+    ]);
+    expect(scope.setTag).toHaveBeenCalledWith("component", "storage");
+    expect(scope.setTag).toHaveBeenCalledWith("stage", "copy-rollback");
+    expect(scope.setTag).toHaveBeenCalledWith(
+      "what",
+      "storage-delete:copy-rollback",
+    );
+    // warn, not error: the console bridge only listens at error level, so
+    // the explicit report above is the one event and this line is the log.
+    expect(warn).toHaveBeenCalledOnce();
   });
 });

@@ -32,6 +32,7 @@ import {
   copyFile,
   createFileReadStream,
   deleteFile,
+  deleteFileBestEffort,
   StorageOperationError,
   storageKey,
   uploadFileFromPath,
@@ -708,11 +709,13 @@ async function removeFailedCreatedDocument(
 ): Promise<void> {
   if (session.purpose !== "document_create") return;
   await Promise.all([
-    deleteFile(
+    deleteFileBestEffort(
       storageKey(session.user_id, file.resource_id, file.filename),
-    ).catch(() => {}),
-    deleteFile(convertedPdfKey(session.user_id, file.resource_id)).catch(
-      () => {},
+      "failed-document-remove",
+    ),
+    deleteFileBestEffort(
+      convertedPdfKey(session.user_id, file.resource_id),
+      "failed-document-remove",
     ),
   ]);
   const { error } = await db
@@ -865,7 +868,7 @@ export async function processUploadJob(
           .eq("id", file.id)
           .eq("session_id", typedSession.id);
         if (error) throw error;
-        await deleteFile(file.sealed_storage_path).catch(() => {});
+        await deleteFileBestEffort(file.sealed_storage_path, "sealed-source-after-process");
         await heartbeatJob(db, jobId, workerId);
       }
     }
@@ -928,7 +931,7 @@ export async function processUploadJob(
       .eq("status", "error");
     for (const failedFile of failedFiles ?? []) {
       if (failedFile.sealed_storage_path) {
-        await deleteFile(failedFile.sealed_storage_path).catch(() => {});
+        await deleteFileBestEffort(failedFile.sealed_storage_path, "failed-file-sealed");
       }
     }
   }
@@ -1038,10 +1041,10 @@ export async function cleanupUploadSessions(db: Db): Promise<void> {
       }
       await Promise.all([
         file.staging_storage_path
-          ? deleteFile(file.staging_storage_path).catch(() => {})
+          ? deleteFileBestEffort(file.staging_storage_path, "session-expiry")
           : Promise.resolve(),
         file.sealed_storage_path
-          ? deleteFile(file.sealed_storage_path).catch(() => {})
+          ? deleteFileBestEffort(file.sealed_storage_path, "session-expiry")
           : Promise.resolve(),
       ]);
     }

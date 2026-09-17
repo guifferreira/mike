@@ -502,6 +502,37 @@ export function requestRoutePattern(
   return concrete ? `${concrete}` : base || undefined;
 }
 
+/**
+ * Run work whose failure must not fail the caller — a rollback, a cleanup,
+ * a cache refresh — but must not vanish either. `promise.catch(() => {})`
+ * is how a storage leak or a half-finished rollback stays invisible for
+ * months; this reports it as a warning, grouped per `what`, and resolves
+ * to undefined so the caller's control flow is unchanged.
+ */
+export function bestEffort<T>(
+  work: Promise<T>,
+  context: {
+    /** Stable, low-cardinality name of the operation: the grouping key. */
+    what: string;
+    tags?: ReportContext["tags"];
+    extra?: ReportContext["extra"];
+  },
+): Promise<T | undefined> {
+  return work.catch((error: unknown) => {
+    reportError(error, {
+      level: "warning",
+      tags: { component: "best-effort", ...context.tags, what: context.what },
+      extra: context.extra,
+      fingerprint: ["best-effort", context.what],
+    });
+    console.warn(`[best-effort] ${context.what} failed`, {
+      ...(context.extra ?? {}),
+      error,
+    });
+    return undefined;
+  });
+}
+
 /** Attach the request id to every event captured during this request. */
 export function tagCurrentRequest(requestId: string): void {
   if (!initialized) return;
