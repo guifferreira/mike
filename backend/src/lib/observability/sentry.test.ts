@@ -29,6 +29,10 @@ const sentryMock = vi.hoisted(() => ({
     name: "CaptureConsole",
     opts,
   })),
+  onUnhandledRejectionIntegration: vi.fn((opts: unknown) => ({
+    name: "OnUnhandledRejection",
+    opts,
+  })),
 }));
 
 vi.mock("@sentry/node", () => ({
@@ -171,6 +175,11 @@ describe("initSentry", () => {
     });
     expect(sentryMock.httpIntegration).toHaveBeenCalledWith({
       maxIncomingRequestBodySize: "none",
+    });
+    // Crash parity: an unhandled rejection must still take the process
+    // down, as it does without a DSN (Node's default), not be swallowed.
+    expect(sentryMock.onUnhandledRejectionIntegration).toHaveBeenCalledWith({
+      mode: "strict",
     });
     expect(sentryMock.captureConsoleIntegration).toHaveBeenCalledWith({
       levels: ["error"],

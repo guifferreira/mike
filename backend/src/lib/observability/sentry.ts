@@ -406,6 +406,13 @@ export function initSentry(
     integrations: [
       Sentry.httpIntegration({ maxIncomingRequestBodySize: "none" }),
       Sentry.captureConsoleIntegration({ levels: ["error"] }),
+      // Node 22 crashes on an unhandled rejection; the SDK's default "warn"
+      // mode registers its own listener, which silently turns that crash
+      // into "log and carry on" the moment a DSN is set. A DSN must not
+      // change how the process behaves: report the rejection, then exit
+      // exactly as an install without Sentry would (the API is restarted by
+      // its supervisor, the worker thread is respawned by index.ts).
+      Sentry.onUnhandledRejectionIntegration({ mode: "strict" }),
     ],
     initialScope: {
       tags: { service: "mike-backend", role },

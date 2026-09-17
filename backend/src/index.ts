@@ -16,16 +16,24 @@ const PORT = process.env.PORT ?? 3001;
 // first export fails. Unset is a valid choice and means manifests go out
 // unsigned; malformed is a misconfiguration, so stop rather than serve a
 // deployment whose exports will fail later.
-try {
-  validateRuntimeConfiguration();
-  const signingKey = manifestPublicKey();
-  if (signingKey) {
-    console.log(`Export manifests signed with key ${signingKey.key_id}`);
+//
+// Runs inside main() and is awaited: the fatal report has to be flushed to
+// Sentry before exit, and while that flush is in flight nothing below may
+// bind the port or start a worker — a process that has already decided to
+// exit must not serve a request or claim a job in its last two seconds.
+async function validateBootConfiguration(): Promise<void> {
+  try {
+    validateRuntimeConfiguration();
+    const signingKey = manifestPublicKey();
+    if (signingKey) {
+      console.log(`Export manifests signed with key ${signingKey.key_id}`);
+    }
+  } catch (err) {
+    reportError(err, { tags: { component: "boot" }, level: "fatal" });
+    console.error(err instanceof Error ? err.message : String(err));
+    await flushSentry();
+    process.exit(1);
   }
-} catch (err) {
-  reportError(err, { tags: { component: "boot" }, level: "fatal" });
-  console.error(err instanceof Error ? err.message : String(err));
-  void flushSentry().finally(() => process.exit(1));
 }
 
 /**
@@ -60,9 +68,14 @@ function spawnWorkerThread(): void {
   });
   workerThread.on("error", (err) => {
     // An uncaught throw inside the thread. The thread's own Sentry client
-    // usually reports it first; this is the parent's view with the respawn
-    // context, deduplicated by Sentry on the identical stack.
-    reportError(err, { tags: { component: "worker-thread-supervisor" } });
+    // reports it with the real stack and job context; what arrives here is
+    // a structured clone. Sentry groups, it does not deduplicate, so this
+    // supervisor view is fingerprinted as its own issue ("a worker thread
+    // crashed", with a count) rather than doubling every thread issue.
+    reportError(err, {
+      tags: { component: "worker-thread-supervisor" },
+      fingerprint: ["worker-thread-supervisor-error"],
+    });
     console.error("[worker-thread] error", err);
   });
   workerThread.on("exit", (code) => {
@@ -89,6 +102,7 @@ function spawnWorkerThread(): void {
 let server: Server | null = null;
 
 async function main(): Promise<void> {
+  await validateBootConfiguration();
   // Deploying this code against a database that has not run the
   // document-lifecycle migrations leaks storage silently and fails every
   // upload — see lifecycleGuard. The probe is AWAITED before the port is
