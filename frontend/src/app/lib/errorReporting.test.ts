@@ -41,6 +41,7 @@ import {
     scrubEvent,
     serverSentryOptions,
     setReportingUser,
+    reportNetworkFailure,
 } from "./errorReporting";
 
 afterEach(() => {
@@ -237,5 +238,47 @@ describe("serverSentryOptions", () => {
             NODE_ENV: "production",
         } as unknown as NodeJS.ProcessEnv);
         expect(withNodeEnv.environment).toBe("production");
+    });
+});
+
+describe("reportNetworkFailure", () => {
+    it("is a no-op without a DSN but still marks the error for the console bridge", () => {
+        const failure = new TypeError("Failed to fetch");
+        expect(
+            reportNetworkFailure(failure, { method: "GET", url: "/api/user/profile" }),
+        ).toBeNull();
+        expect(Sentry.captureException).not.toHaveBeenCalled();
+        expect(
+            scrubEvent(
+                {
+                    logger: "console",
+                    exception: {
+                        values: [{ mechanism: { type: "auto.core.capture_console" } }],
+                    },
+                },
+                { originalException: failure },
+            ),
+        ).toBeNull();
+    });
+
+    it("reports a warning grouped per endpoint, not one issue for every fetch failure", () => {
+        state.enabled = true;
+        const failure = new TypeError("Failed to fetch");
+
+        reportNetworkFailure(failure, {
+            method: "POST",
+            url: "/api/projects/8f1c2a3e-1234-4bcd-9e0f-1234567890ab/documents",
+        });
+
+        expect(Sentry.captureException).toHaveBeenCalledWith(failure);
+        const scope = state.scopes[0];
+        expect(scope.setLevel).toHaveBeenCalledWith("warning");
+        expect(scope.setFingerprint).toHaveBeenCalledWith([
+            "api-network",
+            "POST",
+            "/api/projects/:id/documents",
+        ]);
+        expect(scope.setTag).toHaveBeenCalledWith("network", true);
+        expect(scope.setTag).toHaveBeenCalledWith("http_route", "/api/projects/:id/documents");
     });
 });

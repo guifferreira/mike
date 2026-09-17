@@ -5,7 +5,11 @@ import type { AssistantEvent, Chat } from "@/app/components/shared/types";
 // request id; the reporter is mocked so these tests assert the call, and
 // the reporter's own suite covers what it does with it.
 const reportApiFailure = vi.hoisted(() => vi.fn());
-vi.mock("@/app/lib/errorReporting", () => ({ reportApiFailure }));
+const reportNetworkFailure = vi.hoisted(() => vi.fn());
+vi.mock("@/app/lib/errorReporting", () => ({
+    reportApiFailure,
+    reportNetworkFailure,
+}));
 
 import {
     MikeApiError,
@@ -488,6 +492,20 @@ describe("apiRequest plumbing (via thin wrappers)", () => {
         expect(reportApiFailure).toHaveBeenCalledWith(
             expect.objectContaining({ method: "POST", status: 500 }),
         );
+    });
+
+    it("reports a transport failure once with the endpoint, then rethrows it unchanged", async () => {
+        const failure = new TypeError("Failed to fetch");
+        fetchMock.mockRejectedValueOnce(failure);
+
+        await expect(createProject("Acme")).rejects.toBe(failure);
+
+        expect(reportNetworkFailure).toHaveBeenCalledOnce();
+        expect(reportNetworkFailure).toHaveBeenCalledWith(failure, {
+            method: "POST",
+            url: "/api/projects",
+        });
+        expect(reportApiFailure).not.toHaveBeenCalled();
     });
 
     it("does not report a non-JSON 4xx", async () => {

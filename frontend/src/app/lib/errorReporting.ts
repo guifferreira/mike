@@ -97,6 +97,36 @@ export function reportApiFailure(failure: {
     });
 }
 
+/**
+ * The request never reached the server: the backend is down, the origin
+ * is blocked, TLS failed, the network dropped. Not a bug in this code, but
+ * it is the failure users see most and it was previously reported only
+ * through the console bridge as one undifferentiated "Failed to fetch"
+ * issue with no endpoint. Warning level, grouped per endpoint.
+ */
+export function reportNetworkFailure(
+    error: unknown,
+    request: { method: string; url: string },
+): string | null {
+    scrubber.markReported(error);
+    if (!Sentry.isEnabled()) return null;
+    const route = normalizeApiPath(request.url);
+    return Sentry.withScope((scope) => {
+        applyContext(scope, {
+            level: "warning",
+            tags: {
+                component: "mike-api",
+                network: true,
+                http_method: request.method,
+                http_route: route,
+            },
+            extra: { url: request.url },
+            fingerprint: ["api-network", request.method, route],
+        });
+        return Sentry.captureException(error);
+    });
+}
+
 /** Attach (or clear) the signed-in user's id — never the email. */
 export function setReportingUser(user: { id: string } | null): void {
     if (!Sentry.isEnabled()) return;

@@ -5,7 +5,7 @@
 
 import { isPanelDocument } from "@/app/components/shared/types";
 import { authenticatedFetch } from "@/app/lib/authEvents";
-import { reportApiFailure } from "@/app/lib/errorReporting";
+import { reportApiFailure, reportNetworkFailure } from "@/app/lib/errorReporting";
 import {
     UploadBatchError,
     createControlRequestRetryPolicy,
@@ -87,7 +87,22 @@ interface ServerChatDetailOut {
 }
 
 export const API_BASE = "/api";
-const apiFetch: typeof fetch = authenticatedFetch;
+/**
+ * Every API call goes through here so a transport failure (the request
+ * never got an HTTP response) is reported once, tagged with the endpoint,
+ * before it propagates as the bare TypeError the browser throws.
+ */
+const apiFetch: typeof fetch = async (input, init) => {
+    try {
+        return await authenticatedFetch(input, init);
+    } catch (error) {
+        reportNetworkFailure(error, {
+            method: init?.method ?? "GET",
+            url: String(input),
+        });
+        throw error;
+    }
+};
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {
     if (isDev) console.log(...args);
