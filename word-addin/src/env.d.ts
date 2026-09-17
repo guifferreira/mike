@@ -12,6 +12,7 @@ declare const process: {
     readonly REACT_APP_SENTRY_DSN: string | undefined;
     readonly REACT_APP_SENTRY_ENVIRONMENT: string | undefined;
     readonly REACT_APP_SENTRY_RELEASE: string | undefined;
+    readonly REACT_APP_GIT_SHA: string | undefined;
     readonly REACT_APP_SENTRY_TRACES_SAMPLE_RATE: string | undefined;
     readonly NODE_ENV: string;
   };

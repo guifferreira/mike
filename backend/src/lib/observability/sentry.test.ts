@@ -139,6 +139,20 @@ describe("sentryConfiguration", () => {
     ).toBe(10);
   });
 
+  it("derives the release from GIT_SHA when SENTRY_RELEASE is unset", () => {
+    expect(
+      sentryConfiguration({ ...quietEnv, GIT_SHA: "0123456789abcdef0123" } as NodeJS.ProcessEnv)
+        .release,
+    ).toBe("mike@0123456789ab");
+    expect(
+      sentryConfiguration({
+        ...quietEnv,
+        GIT_SHA: "0123456789abcdef0123",
+        SENTRY_RELEASE: "mike@2.0.0",
+      } as NodeJS.ProcessEnv).release,
+    ).toBe("mike@2.0.0");
+  });
+
   it("ignores a non-numeric sample rate", () => {
     const config = sentryConfiguration({
       SENTRY_TRACES_SAMPLE_RATE: "lots",

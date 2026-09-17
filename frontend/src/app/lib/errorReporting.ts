@@ -10,6 +10,7 @@ import {
     createEventScrubber,
     normalizeApiPath,
     parseSampleRate,
+    releaseName,
 } from "@/shared/lib/sentryEvent";
 
 export type ReportLevel = "fatal" | "error" | "warning";
@@ -142,6 +143,7 @@ export function browserSentryOptions(env: {
     dsn?: string;
     environment?: string;
     release?: string;
+    gitSha?: string;
     tracesSampleRate?: string;
     nodeEnv?: string;
 }): Sentry.BrowserOptions {
@@ -150,7 +152,7 @@ export function browserSentryOptions(env: {
         dsn: dsn || undefined,
         enabled: dsn.length > 0,
         environment: env.environment?.trim() || env.nodeEnv || "development",
-        release: env.release?.trim() || undefined,
+        release: releaseName(env.release, env.gitSha),
         tracesSampleRate: parseSampleRate(env.tracesSampleRate, 0),
         // Session replay is deliberately NOT enabled: it would record
         // privileged document text on screen.
@@ -172,7 +174,7 @@ export function serverSentryOptions(
         enabled: dsn.length > 0,
         environment:
             env.SENTRY_ENVIRONMENT?.trim() || env.NODE_ENV || "development",
-        release: env.SENTRY_RELEASE?.trim() || undefined,
+        release: releaseName(env.SENTRY_RELEASE, env.GIT_SHA),
         tracesSampleRate: parseSampleRate(env.SENTRY_TRACES_SAMPLE_RATE, 0),
         sendDefaultPii: false,
         initialScope: { tags: { service: "mike-frontend", runtime } },

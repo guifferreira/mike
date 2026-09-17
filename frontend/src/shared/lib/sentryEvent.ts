@@ -376,3 +376,19 @@ export function parseSampleRate(
     if (!Number.isFinite(parsed)) return fallback;
     return Math.min(Math.max(parsed, 0), 1);
 }
+
+/**
+ * The release every event is tagged with. An explicit SENTRY_RELEASE wins;
+ * otherwise the git commit the build came from (`mike@<sha12>`), which is
+ * what lets Sentry say "regressed in this deploy" and resolve an issue
+ * until the next release. Undefined when neither is known (a dev checkout).
+ */
+export function releaseName(
+    explicit: string | undefined,
+    gitSha: string | undefined,
+): string | undefined {
+    const named = explicit?.trim();
+    if (named) return named;
+    const sha = gitSha?.trim();
+    return sha ? `mike@${sha.slice(0, 12)}` : undefined;
+}

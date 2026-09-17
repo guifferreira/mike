@@ -151,7 +151,12 @@ export function sentryConfiguration(env: NodeJS.ProcessEnv = process.env) {
       (!isTestProcess || env.SENTRY_ALLOW_IN_TESTS === "true"),
     environment:
       env.SENTRY_ENVIRONMENT?.trim() || env.NODE_ENV?.trim() || "development",
-    release: env.SENTRY_RELEASE?.trim() || undefined,
+    // An explicit SENTRY_RELEASE wins; otherwise the git commit the image
+    // was built from (GIT_SHA, a Dockerfile build arg) — what lets Sentry
+    // say "regressed in this deploy" and resolve an issue until the next.
+    release:
+      env.SENTRY_RELEASE?.trim() ||
+      (env.GIT_SHA?.trim() ? `mike@${env.GIT_SHA.trim().slice(0, 12)}` : undefined),
     // Performance tracing is opt-in: error tracking is the goal of this
     // integration and traces cost quota. 0 keeps the OpenTelemetry request
     // instrumentation (needed for request context on errors) without

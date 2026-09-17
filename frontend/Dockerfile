@@ -22,9 +22,14 @@ COPY packages/contracts /packages/contracts
 ARG NEXT_PUBLIC_SENTRY_DSN=
 ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT=
 ARG NEXT_PUBLIC_SENTRY_RELEASE=
+# The commit this image was built from; the release tag when no explicit
+# release is given, for the browser bundle (inlined) and the Next server.
+ARG GIT_SHA=
 ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN \
     NEXT_PUBLIC_SENTRY_ENVIRONMENT=$NEXT_PUBLIC_SENTRY_ENVIRONMENT \
-    NEXT_PUBLIC_SENTRY_RELEASE=$NEXT_PUBLIC_SENTRY_RELEASE
+    NEXT_PUBLIC_SENTRY_RELEASE=$NEXT_PUBLIC_SENTRY_RELEASE \
+    NEXT_PUBLIC_GIT_SHA=$GIT_SHA \
+    GIT_SHA=$GIT_SHA
 
 RUN npm run build
 

@@ -14,6 +14,7 @@ import {
   createEventScrubber,
   normalizeApiPath,
   parseSampleRate,
+  releaseName,
 } from "@mike/sentry-event";
 
 export type ReportLevel = "fatal" | "error" | "warning";
@@ -38,6 +39,7 @@ export function addinSentryOptions(
     dsn?: string;
     environment?: string;
     release?: string;
+    gitSha?: string;
     tracesSampleRate?: string;
     nodeEnv?: string;
   },
@@ -47,7 +49,7 @@ export function addinSentryOptions(
     dsn: dsn || undefined,
     enabled: dsn.length > 0,
     environment: env.environment?.trim() || env.nodeEnv || "development",
-    release: env.release?.trim() || undefined,
+    release: releaseName(env.release, env.gitSha),
     tracesSampleRate: parseSampleRate(env.tracesSampleRate, 0),
     // No session replay: the pane sits next to a privileged document.
     sendDefaultPii: false,
@@ -63,6 +65,7 @@ export function initAddinErrorReporting(surface: AddinSurface): boolean {
     dsn: process.env.REACT_APP_SENTRY_DSN,
     environment: process.env.REACT_APP_SENTRY_ENVIRONMENT,
     release: process.env.REACT_APP_SENTRY_RELEASE,
+    gitSha: process.env.REACT_APP_GIT_SHA,
     tracesSampleRate: process.env.REACT_APP_SENTRY_TRACES_SAMPLE_RATE,
     nodeEnv: process.env.NODE_ENV,
   });

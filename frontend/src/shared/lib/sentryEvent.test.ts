@@ -7,6 +7,7 @@ import {
     parseSampleRate,
     redactSensitiveValues,
     redactUrl,
+    releaseName,
 } from "./sentryEvent";
 
 describe("redactSensitiveValues", () => {
@@ -289,5 +290,14 @@ describe("query parameter forms", () => {
     it("still filters a key whose percent-encoding is malformed", () => {
         expect(redactUrl("/x?%E0token=abc&ok=1")).toBe("/x?%E0token=[Filtered]&ok=1");
         expect(redactUrl("/x?flag&token=abc")).toBe("/x?flag&token=[Filtered]");
+    });
+});
+
+describe("releaseName", () => {
+    it("prefers an explicit release, falls back to the git sha, else undefined", () => {
+        expect(releaseName("mike@1.4.0", "abcdef1234567890")).toBe("mike@1.4.0");
+        expect(releaseName("  ", "abcdef1234567890abcd")).toBe("mike@abcdef123456");
+        expect(releaseName(undefined, undefined)).toBeUndefined();
+        expect(releaseName("", "")).toBeUndefined();
     });
 });

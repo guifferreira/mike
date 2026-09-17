@@ -207,6 +207,28 @@ describe("browserSentryOptions", () => {
     });
 });
 
+describe("release tagging", () => {
+    it("falls back to the git sha for both the browser and the server options", () => {
+        expect(browserSentryOptions({ dsn: "https://k@o.ingest.sentry.io/1", gitSha: "abcdef1234567890" }).release).toBe(
+            "mike@abcdef123456",
+        );
+        expect(
+            serverSentryOptions("server", {
+                NODE_ENV: "test",
+                SENTRY_DSN: "https://k@o.ingest.sentry.io/1",
+                GIT_SHA: "abcdef1234567890",
+            } as NodeJS.ProcessEnv).release,
+        ).toBe("mike@abcdef123456");
+        expect(
+            serverSentryOptions("server", {
+                NODE_ENV: "test",
+                SENTRY_RELEASE: "mike@3.1.0",
+                GIT_SHA: "abcdef1234567890",
+            } as NodeJS.ProcessEnv).release,
+        ).toBe("mike@3.1.0");
+    });
+});
+
 describe("serverSentryOptions", () => {
     it("reads runtime env and tags the runtime", () => {
         const options = serverSentryOptions("edge", {
