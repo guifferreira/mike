@@ -31,8 +31,7 @@ vi.mock("../../../modules/user/user.dataCleanup", () => ({
         userId: string,
         userEmail?: string | null,
     ) => deleteUserAccountData(db, userId, userEmail),
-    listOrgsBlockingAccountDeletion: (...a: unknown[]) =>
-        listOrgsBlockingAccountDeletion(...a),
+    listOrgsBlockingAccountDeletion: () => listOrgsBlockingAccountDeletion(),
 }));
 
 const buildUserAccountExport =

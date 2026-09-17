@@ -386,7 +386,7 @@ export async function checkWorkflowAccess(
     // An exact match is correct because BOTH sides are canonical:
     // normalizeEmail trims and lowercases the caller's address, and
     // workflow_shares.shared_with_email carries a lowercase CHECK (added by
-    // migration 20260912_02, which also folded the legacy mixed-case rows).
+    // migration 20260917_01, which also folded the legacy mixed-case rows).
     // Before that constraint a mixed-case row listed for its recipient via
     // get_workflows_overview — which lowers both sides — and then missed
     // here, so the workflow 404'd the moment they opened it.

@@ -134,8 +134,8 @@ export async function deleteDocument(
     userEmail?: string,
 ): Promise<
     | { ok: true }
-    | { ok: false; error?: unknown }
-    | { ok: false; kind: "forbidden"; detail: string }
+    | { ok: false; kind?: undefined; error?: unknown }
+    | { ok: false; kind: "forbidden"; detail: string; error?: undefined }
 > {
     const { data: doc } = await db
         .from("documents")

@@ -377,7 +377,7 @@ describe("queryEvents visibility scoping", () => {
             ],
         });
 
-        const visible = await accessibleProjectIds(db, "u1", "u1@example.com");
+        const visible = await listAccessibleProjectIds("u1", "u1@example.com", db);
 
         expect(visible).toEqual(
             expect.arrayContaining(["p-colleague", "p-detached"]),
@@ -396,7 +396,7 @@ describe("queryEvents visibility scoping", () => {
             denies: ["p-walled"],
         });
 
-        const visible = await accessibleProjectIds(db, "u1", "u1@example.com");
+        const visible = await listAccessibleProjectIds("u1", "u1@example.com", db);
 
         expect(visible).toContain("p-open");
         expect(visible).not.toContain("p-walled");

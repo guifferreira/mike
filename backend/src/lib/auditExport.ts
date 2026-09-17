@@ -359,7 +359,10 @@ export async function queryEvents(
 
     return {
         ...result,
-        data: result.data.map((row) => {
+        // Annotated: the merged path's rows are `AuditRow` (an index
+        // signature), and destructuring `user_id` out of one erases it, so
+        // without this the callers lose every other column from the type.
+        data: result.data.map((row): AuditRow => {
             const { user_id: userId, ...event } = row;
             return {
                 ...event,

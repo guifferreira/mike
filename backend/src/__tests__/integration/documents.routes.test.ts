@@ -105,10 +105,20 @@ function makeQuery(table: string) {
     return q;
 }
 
+// Version deletion runs through the delete_document_version RPC since the
+// document lifecycle migration (20260914_01): the soft-delete and the
+// current_version_id fallback happen inside one statement, so the stub
+// answers with that RPC's payload rather than with table updates.
+const rpcCalls: { name: string; args: unknown }[] = [];
+let rpcResult: { data: unknown; error: unknown } = { data: null, error: null };
+
 vi.mock("../../lib/supabase", () => ({
     createServerSupabase: vi.fn(() => ({
         from: vi.fn((table: string) => makeQuery(table)),
-        rpc: vi.fn(async () => ({ data: null, error: null })),
+        rpc: vi.fn(async (name: string, args: unknown) => {
+            rpcCalls.push({ name, args });
+            return rpcResult;
+        }),
         auth: {
             getUser: async () => ({ data: { user: { id: "u1" } }, error: null }),
         },
@@ -140,6 +150,10 @@ vi.mock("../../lib/access", async (importOriginal) => ({
 vi.mock("../../lib/dbq/enqueue", () => ({
     enqueueStorageCleanup: vi.fn(async () => {}),
     enqueueDbJob: vi.fn(async () => ({ ok: true })),
+    // Document lifecycle v2 (main, 20260914_01): every delete path completes
+    // its inline cleanup through this, so the mock has to offer it or the
+    // route answers 500 on a delete the test is asserting succeeds.
+    requestDocumentCleanupDelivery: vi.fn(async () => 0),
 }));
 
 import { app } from "../../app";
@@ -308,6 +322,11 @@ describe("DELETE /single-documents/:documentId/versions/:versionId", () => {
     beforeEach(() => {
         deletes.length = 0;
         updates.length = 0;
+        rpcCalls.length = 0;
+        rpcResult = {
+            data: { deleted_version_id: V2, current_version_id: V1 },
+            error: null,
+        };
         errors = {};
         rows = {
             documents: [
@@ -353,8 +372,8 @@ describe("DELETE /single-documents/:documentId/versions/:versionId", () => {
         expect(res.body.detail).toBe(
             "You do not have permission to delete this version.",
         );
-        // Nothing was soft-deleted and current_version_id did not move.
-        expect(updates).toEqual([]);
+        // The refusal is ahead of the write: the RPC never ran.
+        expect(rpcCalls).toEqual([]);
         expect(rows.documents[0].current_version_id).toBe(V2);
     });
 
@@ -368,7 +387,7 @@ describe("DELETE /single-documents/:documentId/versions/:versionId", () => {
 
         expect(res.status).toBe(404);
         expect(res.body.detail).toBe("Document not found");
-        expect(updates).toEqual([]);
+        expect(rpcCalls).toEqual([]);
     });
 
     it("lets the version's creator through the gate", async () => {
@@ -383,9 +402,9 @@ describe("DELETE /single-documents/:documentId/versions/:versionId", () => {
         expect(res.body.deleted_version_id).toBe(V2);
         // The current version fell back to the newest survivor.
         expect(res.body.current_version_id).toBe(V1);
-        expect(
-            updates.some((update) => update.table === "document_versions"),
-        ).toBe(true);
+        expect(rpcCalls.map((call) => call.name)).toEqual([
+            "delete_document_version",
+        ]);
     });
 });
 

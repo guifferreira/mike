@@ -222,9 +222,9 @@ export function OrganizationsOverview() {
               description={invitationsError}
               tone="error"
               action={
-                <PillButton tone="black" size="sm" onClick={() => void load()}>
+                <PillButtonUI tone="black" size="sm" onClick={() => void load()}>
                   Try again
-                </PillButton>
+                </PillButtonUI>
               }
             />
           </div>

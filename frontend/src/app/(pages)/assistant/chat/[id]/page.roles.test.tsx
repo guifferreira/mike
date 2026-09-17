@@ -114,12 +114,11 @@ describe("global chat page composer gating", () => {
     });
 
     it("says 'not known yet' rather than 'viewing only' while getChat is in flight", async () => {
-        // Every cold load starts with no initialMessages, so the old
-        // `useState(initialMessages.length > 0)` opened at FALSE — and a
-        // chat's own owner was told "Viewing only — sending needs edit
-        // access" until the fetch landed. null is the third answer: still
-        // fail-closed (ChatInput disables on it), but it asserts nothing
-        // about the caller's access.
+        // Every cold load starts with no initialMessages, so `canSend` opens
+        // at FALSE — and a chat's own owner used to be told "Viewing only —
+        // sending needs edit access" until the fetch landed. `accessResolved`
+        // is the answer to that: false means "not known yet", and ChatView
+        // keeps the composer off the page rather than showing the refusal.
         let settle!: (value: ReturnType<typeof chatDetail>) => void;
         getChat.mockReturnValue(
             new Promise((resolve) => {
@@ -129,7 +128,9 @@ describe("global chat page composer gating", () => {
 
         render(<AssistantChatPage />);
 
-        expect(screen.getByTestId("can-send")).toHaveTextContent("null");
+        expect(screen.getByTestId("access-resolved")).toHaveTextContent(
+            "false",
+        );
 
         await act(async () => {
             settle(chatDetail("owner"));
@@ -137,6 +138,7 @@ describe("global chat page composer gating", () => {
         await waitFor(() =>
             expect(screen.getByTestId("can-send")).toHaveTextContent("true"),
         );
+        expect(screen.getByTestId("access-resolved")).toHaveTextContent("true");
     });
 
     it("stays fail-closed when getChat never answers", async () => {

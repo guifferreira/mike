@@ -54,8 +54,13 @@ export async function deleteUserAccount(
     token: string | undefined,
 ): Promise<
     | { ok: true }
-    | { ok: false; kind: "org_successor_required"; blockers: AccountDeletionOrgBlocker[] }
-    | { ok: false; error: unknown }
+    | {
+          ok: false;
+          kind: "org_successor_required";
+          blockers: AccountDeletionOrgBlocker[];
+          error?: undefined;
+      }
+    | { ok: false; kind?: undefined; error: unknown }
 > {
     try {
         // ORGANIZATIONS FIRST. An account that is the only admin of an

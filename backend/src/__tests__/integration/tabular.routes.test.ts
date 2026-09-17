@@ -206,7 +206,7 @@ vi.mock("../../lib/documentVersions", () => ({
 }));
 
 import { app } from "../../app";
-import { REVIEW_EDIT_FORBIDDEN } from "../../routes/tabular";
+import { REVIEW_EDIT_FORBIDDEN } from "../../modules/tabular/tabular.service";
 
 const AUTH = ["Authorization", "Bearer test"] as const;
 

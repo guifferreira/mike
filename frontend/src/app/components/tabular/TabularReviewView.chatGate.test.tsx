@@ -15,6 +15,10 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/app/lib/mikeApi", () => ({
     MikeApiError: class MikeApiError extends Error {},
+    // main's model registry (#339) makes the view fetch the model catalog on
+    // mount; the mock has to answer or every render throws before the gate
+    // this file is about is even reached.
+    getConfiguredModels: vi.fn(async () => []),
     clearTabularCells: vi.fn(),
     deleteTabularReview: vi.fn(),
     getTabularReview: vi.fn(),

@@ -951,13 +951,13 @@ describe("workflows.routes", () => {
       // Mirrors the real fall-through: a row with no project, no workflow and
       // no org has no container to grant access, so it is refused.
       vi.mocked(ensureDocAccess).mockImplementation(
-        async (document: unknown) => ({
+        (async (document: unknown) => ({
           ok: Boolean(
             (document as Record<string, unknown>).project_id ??
               (document as Record<string, unknown>).workflow_id ??
               (document as Record<string, unknown>).org_id,
           ),
-        }),
+        })) as unknown as typeof ensureDocAccess,
       );
       const { db, selects } = projectingDb({
         id: DOC_ID,

@@ -291,11 +291,13 @@ describe("project chat page — the project ladder, not the creator", () => {
     it("says nothing about sending until the project role is known", async () => {
         // `false` here is an accusation — the composer reads "Viewing only".
         // A project owner opening their own chat cold was told that for the
-        // length of the project fetch.
+        // length of the project fetch. main's answer is stronger than a
+        // neutral placeholder: the composer is not rendered at all until the
+        // project, chat and session have all resolved.
         getProject.mockReturnValue(new Promise(() => {}));
         await renderPage();
 
-        expect(screen.getByTestId("can-send")).toHaveTextContent("null");
+        expect(screen.queryByTestId("can-send")).not.toBeInTheDocument();
     });
 });
 
