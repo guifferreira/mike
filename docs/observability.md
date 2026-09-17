@@ -23,11 +23,12 @@ however many users hit it.
 **Backend**
 
 - Every unexpected 5xx. All route handlers answer server failures through
-  `sendInternalError`, which reports the original error with the Express route
-  pattern (`/projects/:projectId`, so one bug is one issue), the HTTP method,
-  the status, and the `request_id` that the client receives in the response
-  body. A handler that writes its own 5xx body is caught by the response
-  sanitizer and reported as a message.
+  `sendInternalError`, which reports the original error with the mounted
+  Express route pattern (`/projects/:projectId`, so one bug is one issue
+  however many projects it hits), the HTTP method, the status, and the
+  `request_id` that the client receives in the response body. A handler that
+  writes its own 5xx body is caught by the response sanitizer and reported as
+  a message.
 - Model streams that fail after the response has started (the 500 path never
   sees these). Deliberate, explained refusals (`UserFacingError`: missing API
   key, disallowed model) are not bugs and are not reported.
@@ -37,7 +38,15 @@ however many users hit it.
   failures, upload-session processing and conversion failures, worker
   heartbeat and loop failures, and the maintenance sweeps.
 - Process lifecycle: boot configuration failures, worker-thread crashes and
-  respawns, graceful-shutdown errors, workflow-sync job failures.
+  respawns, graceful-shutdown errors, workflow-sync job failures. Unhandled
+  promise rejections are reported and then still exit the process, exactly
+  as Node does without a DSN; enabling Sentry never changes how the process
+  lives or dies.
+- Best-effort work that must not fail its caller but must not vanish either:
+  storage deletes during rollbacks, cancelled uploads, and expiry sweeps go
+  through `deleteFileBestEffort(key, stage)` and are reported as warnings
+  grouped by stage. Use `bestEffort(promise, { what })` for the same shape
+  elsewhere instead of `.catch(() => {})`.
 - Everything else that reaches `console.error`, via Sentry's console bridge.
   Errors already reported explicitly are recognised and not sent twice.
 
@@ -51,7 +60,10 @@ Each event is tagged with `service=mike-backend`, `role` (`api`, `worker`,
   (`global-error.tsx`).
 - Every backend 5xx seen by the API client, as `API <status> on <METHOD>
   <route>` with the backend's `request_id` — search `request_id:<id>` in Sentry
-  to see both halves of one failure.
+  to see both halves of one failure. 4xx are intentional answers to user input
+  and are shown, not reported.
+- Requests that never reached the server (backend down, mid-deploy, network),
+  as warnings grouped per endpoint rather than one "Failed to fetch" issue.
 - Assistant chat streams that fail for a reason other than the user stopping
   them.
 - Server side: gateway failures to reach the backend, and render/route-handler
@@ -80,6 +92,9 @@ Mike handles privileged legal documents, so the SDKs run with
   `Set-Cookie`, and API-key headers (the backend also disables body capture in
   the HTTP integration, so bodies never sit on an event in memory);
 - reduces the user to their id — the email address is never attached;
+- redacts credentials carried in URLs: the token in `/download/<token>`, the
+  `code` and `state` of an OAuth callback, and the signature fields of a
+  presigned storage URL, wherever a URL appears (request, extras, breadcrumbs);
 - replaces the value of any key that looks like a secret (`token`, `secret`,
   `password`, `api_key`, `authorization`, `cookie`, `credential`, ...) anywhere
   in the event's extra data, contexts, or breadcrumbs with `[Filtered]`.
@@ -98,7 +113,7 @@ Backend (`backend/.env`, read at process start):
 ```
 SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>
 SENTRY_ENVIRONMENT=production          # defaults to NODE_ENV
-SENTRY_RELEASE=mike@1.4.0              # optional; pin to a git SHA in CI
+SENTRY_RELEASE=mike@1.4.0              # optional; defaults to mike@<git sha>
 SENTRY_TRACES_SAMPLE_RATE=0            # optional, 0..1
 SENTRY_ENABLE_TEST_ROUTE=false         # see "Verifying" below
 ```
@@ -127,6 +142,19 @@ SENTRY_DSN=...                         # Next server (runtime)
 Use a separate Sentry project for the web app and the backend: separate issue
 streams, separate source maps, and the frontend DSN is public in the bundle.
 
+### Releases
+
+Every event carries a release so Sentry can flag a regression in a deploy and
+resolve an issue "until the next release". Set `SENTRY_RELEASE` explicitly, or
+leave it unset and build with the commit hash; the images then tag events
+`mike@<sha>`:
+
+```bash
+GIT_SHA=$(git rev-parse HEAD) docker compose build
+```
+
+`GIT_SHA` is a build argument for all three images, never a runtime variable.
+
 Word add-in (build time, `word-addin/.env` or the Docker build arguments):
 
 ```
@@ -149,8 +177,10 @@ SENTRY_PROJECT=...
 
 Applies to `next build` (frontend) and `webpack --mode production` (add-in).
 Without all three variables the build is unchanged and nothing is uploaded.
-The backend runs from TypeScript-compiled JavaScript with inline stack traces
-already, so it needs no upload.
+The backend needs no upload: `tsc` emits source maps next to the compiled
+files and the process runs with `--enable-source-maps` (the `start` script,
+and `NODE_OPTIONS` in the Dockerfile), so backend frames already read
+`src/lib/x.ts:line`.
 
 ## Verifying a deployment
 
