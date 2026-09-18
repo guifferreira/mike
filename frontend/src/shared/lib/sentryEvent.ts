@@ -157,6 +157,7 @@ export function redactText(value: string): string {
 const EXTRA_KEY_ALLOWLIST = new Set([
     "arguments",
     "body",
+    "bookmarkName",
     "code",
     "dedupe_key",
     "detail",
@@ -183,6 +184,7 @@ const EXTRA_KEY_ALLOWLIST = new Set([
     "rowId",
     "session_id",
     "sessionId",
+    "stableEditId",
     "stack",
     "stage",
     "status",
@@ -260,7 +262,7 @@ export type ScrubbableEvent = {
         values?: {
             type?: string;
             value?: string;
-            mechanism?: { type?: string };
+            mechanism?: { type?: string; handled?: boolean };
         }[];
     };
     request?: {
@@ -371,10 +373,20 @@ export function createEventScrubber(options?: {
         event: T,
         hint: ScrubHint = {},
     ): T | null => {
-        const mechanism = event.exception?.values?.[0]?.mechanism?.type;
+        // An error reported explicitly (with tags) must not be filed a second
+        // time by an automatic path: the console bridge's copy, or the
+        // global unhandled-error/rejection handler's copy when the same
+        // object then escapes (a reported 5xx that the caller rethrows).
+        // An explicit capture arrives with handled: true (or no mechanism)
+        // and is always kept.
+        const mechanismInfo = event.exception?.values?.[0]?.mechanism;
+        const mechanism = mechanismInfo?.type;
+        const automatic =
+            mechanism === CONSOLE_CAPTURE_MECHANISM ||
+            mechanismInfo?.handled === false;
         const original = hint.originalException;
         if (
-            mechanism === CONSOLE_CAPTURE_MECHANISM &&
+            automatic &&
             original &&
             typeof original === "object" &&
             reported.has(original)

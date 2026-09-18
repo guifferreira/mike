@@ -125,6 +125,38 @@ export function reportError(
   });
 }
 
+/**
+ * An Office.js failure: Word refused a call or lost a proxy while the pane
+ * was reading, anchoring, resolving, restoring, or revealing a tracked
+ * change. This is the product's distinctive risk surface and it varies by
+ * host (Word desktop, Mac, web — tagged by tagOfficeHost), so every such
+ * failure is reported, grouped by `stage` and by Word's own error code.
+ * Documented stale-proxy fallbacks that the code retries are NOT failures
+ * and must not call this.
+ */
+export function reportWordFailure(
+  error: unknown,
+  context: {
+    /** Low-cardinality step name: "resolve", "restore", "reveal", ... */
+    stage: string;
+    level?: ReportLevel;
+    extra?: Record<string, unknown>;
+  },
+): string | null {
+  const officeCode =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code: unknown }).code)
+      : undefined;
+  const name =
+    error instanceof Error ? error.name : officeCode ?? "UnknownWordError";
+  return reportError(error, {
+    level: context.level ?? "error",
+    tags: { component: "word-office", stage: context.stage, office_code: officeCode },
+    extra: context.extra,
+    fingerprint: ["word-office", context.stage, officeCode ?? name],
+  });
+}
+
 /** A backend 5xx seen from the pane, correlated by the backend's request id. */
 export function reportApiFailure(failure: {
   path: string;

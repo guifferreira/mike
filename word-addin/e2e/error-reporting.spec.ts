@@ -21,7 +21,10 @@ function parseEnvelope(raw: string): Envelope {
 function captureEvents(page: Page) {
   const events: Record<string, unknown>[] = [];
   const bodies: string[] = [];
-  const waiters: ((event: Record<string, unknown>) => void)[] = [];
+  const waiters: {
+    match: (event: Record<string, unknown>) => boolean;
+    resolve: (event: Record<string, unknown>) => void;
+  }[] = [];
   const routePromise = page.route(ENVELOPE_GLOB, (route, request) => {
     const body = request.postData() ?? "";
     bodies.push(body);
@@ -31,7 +34,10 @@ function captureEvents(page: Page) {
       if (itemHeader.type === "event") {
         const event = items[i + 1] as Record<string, unknown>;
         events.push(event);
-        for (const waiter of waiters.splice(0)) waiter(event);
+        for (const waiter of waiters.splice(0)) {
+          if (waiter.match(event)) waiter.resolve(event);
+          else waiters.push(waiter);
+        }
       }
     }
     return route.fulfill({ status: 200, body: "{}" });
@@ -40,8 +46,11 @@ function captureEvents(page: Page) {
     ready: routePromise,
     events,
     bodies,
-    next(): Promise<Record<string, unknown>> {
-      return new Promise((resolve) => waiters.push(resolve));
+    /** Resolves with the next event, or the next one `match` accepts. */
+    next(
+      match: (event: Record<string, unknown>) => boolean = () => true,
+    ): Promise<Record<string, unknown>> {
+      return new Promise((resolve) => waiters.push({ match, resolve }));
     },
   };
 }
@@ -155,12 +164,26 @@ test("a mid-stream chat failure is reported once, tagged as word-chat", async ({
     errorBefore: "Model provider exploded",
   });
 
-  const nextEvent = sentry.next();
+  // The harness's fake Word cannot serve the structured document read, so
+  // the pane's flat-text fallback reports a word-office warning first; wait
+  // for the chat failure itself.
+  const nextEvent = sentry.next(
+    (candidate) => tagsOf(candidate).component === "word-chat",
+  );
   await page.getByPlaceholder("How can I help?").fill("Summarise this");
   await page.getByRole("button", { name: "Send" }).click();
 
   const event = await nextEvent;
   expect(tagsOf(event)).toMatchObject({ component: "word-chat" });
+  const officeEvents = sentry.events.filter(
+    (candidate) => tagsOf(candidate).component === "word-office",
+  );
+  // Exactly that one degraded read, at warning level: an Office.js failure
+  // is reported, tagged by stage, and never escalates to an error the user
+  // did not see.
+  expect(
+    officeEvents.map((candidate) => [tagsOf(candidate).stage, candidate.level]),
+  ).toEqual([["document-read", "warning"]]);
   const exception = (event.exception as { values: { value: string }[] }).values[0]!;
   expect(exception.value).toContain("Model provider exploded");
   // The console.error that accompanies the failure is bridged into Sentry

@@ -174,6 +174,7 @@ export function redactText(value: string): string {
 const EXTRA_KEY_ALLOWLIST = new Set([
   "arguments",
   "body",
+  "bookmarkName",
   "code",
   "dedupe_key",
   "detail",
@@ -200,6 +201,7 @@ const EXTRA_KEY_ALLOWLIST = new Set([
   "rowId",
   "session_id",
   "sessionId",
+  "stableEditId",
   "stack",
   "stage",
   "status",
@@ -413,10 +415,17 @@ export function scrubEvent(
   event: Sentry.ErrorEvent,
   hint: Sentry.EventHint,
 ): Sentry.ErrorEvent | null {
-  const mechanism = event.exception?.values?.[0]?.mechanism?.type;
+  // An error reported explicitly must not be filed a second time by an
+  // automatic path: the console bridge's copy, or the unhandled-rejection /
+  // uncaught-exception handler's copy when the same object then escapes.
+  // Explicit captures arrive with handled: true and are always kept.
+  const mechanismInfo = event.exception?.values?.[0]?.mechanism;
+  const mechanism = mechanismInfo?.type;
+  const automatic =
+    mechanism === CONSOLE_MECHANISM || mechanismInfo?.handled === false;
   const original = hint.originalException;
   if (
-    mechanism === CONSOLE_MECHANISM &&
+    automatic &&
     original &&
     typeof original === "object" &&
     reportedErrors.has(original)

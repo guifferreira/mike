@@ -26,7 +26,8 @@ however many users hit it.
   `sendInternalError`, which reports the original error with the mounted
   Express route pattern (`/projects/:projectId`, so one bug is one issue
   however many projects it hits), the HTTP method, the status, and the
-  `request_id` that the client receives in the response body. A handler that
+  `request_id` that the client receives in the response
+  body and the `X-Request-ID` header (exposed to cross-origin scripts). A handler that
   writes its own 5xx body is caught by the response sanitizer and reported as
   a message.
 - Model streams that fail after the response has started (the 500 path never
@@ -68,7 +69,9 @@ Each event is tagged with `service=mike-backend`, `role` (`api`, `worker`,
   them.
 - Server side: gateway failures to reach the backend, and render/route-handler
   errors through Next's `onRequestError` hook.
-- Everything else that reaches `console.error`, deduplicated as above.
+- Everything else that reaches `console.error`, deduplicated as above. An
+  error reported explicitly is also not filed a second time if the same
+  object then escapes to the browser's unhandled-error or rejection handler.
 
 **Word add-in**
 
@@ -78,6 +81,10 @@ Each event is tagged with `service=mike-backend`, `role` (`api`, `worker`,
   server (warning level, grouped per endpoint: the most common failure users
   see in Word and the hardest to diagnose), mid-stream chat failures, and
   tool-result delivery failures.
+- Office.js failures while reading, anchoring, resolving, restoring, or
+  revealing a tracked change (`component=word-office`, grouped by `stage`
+  and by Word's own error code). Documented stale-proxy fallbacks that the
+  code retries are control flow and are not reported.
 - Office host tags (`office_host`, `office_platform`, `office_version`) so a
   bug that only reproduces in Word on Mac 16.x or Word on the web is
   identifiable.
