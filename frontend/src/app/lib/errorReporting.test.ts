@@ -43,6 +43,7 @@ import {
     setReportingUser,
     reportNetworkFailure,
 } from "./errorReporting";
+import { MIKE_SENTRY_DSN } from "@/shared/lib/sentryEvent";
 
 afterEach(() => {
     state.enabled = false;
@@ -170,11 +171,11 @@ describe("setReportingUser", () => {
 });
 
 describe("browserSentryOptions", () => {
-    it("is disabled without a DSN and never turns on PII or replay", () => {
+    it("is ON BY DEFAULT with the Mike project DSN and never turns on PII or replay", () => {
         const options = browserSentryOptions({ nodeEnv: "test" });
-        expect(options.enabled).toBe(false);
-        expect(options.dsn).toBeUndefined();
-        expect(options.environment).toBe("test");
+        expect(options.enabled).toBe(true);
+        expect(options.dsn).toBe(MIKE_SENTRY_DSN.frontend);
+        expect(options.environment).toBe("self-hosted");
         expect(options.release).toBeUndefined();
         expect(options.sendDefaultPii).toBe(false);
         expect(options.tracesSampleRate).toBe(0);
@@ -195,15 +196,28 @@ describe("browserSentryOptions", () => {
         expect(options.release).toBe("mike@1.0.0");
         expect(options.tracesSampleRate).toBe(0.25);
         expect(options.initialScope).toEqual({
-            tags: { service: "mike-frontend", runtime: "browser" },
+            tags: {
+                service: "mike-frontend",
+                runtime: "browser",
+                install: "community",
+            },
         });
         expect(Sentry.captureConsoleIntegration).toHaveBeenCalledWith({
             levels: ["error"],
         });
     });
 
-    it("falls back to development when neither environment is known", () => {
-        expect(browserSentryOptions({}).environment).toBe("development");
+    it("is off with the disabled flag, and marks the official deployment", () => {
+        const off = browserSentryOptions({ disabled: "true", dsn: "https://k@o1.ingest.sentry.io/2" });
+        expect(off.enabled).toBe(false);
+        expect(off.dsn).toBeUndefined();
+        const official = browserSentryOptions({ install: "official" });
+        expect((official.initialScope as { tags: { install: string } }).tags.install).toBe("official");
+    });
+
+    it("defaults the environment to self-hosted, never to NODE_ENV", () => {
+        expect(browserSentryOptions({}).environment).toBe("self-hosted");
+        expect(browserSentryOptions({ nodeEnv: "production" }).environment).toBe("self-hosted");
     });
 });
 
@@ -242,24 +256,32 @@ describe("serverSentryOptions", () => {
         expect(options.release).toBe("r1");
         expect(options.tracesSampleRate).toBe(0.1);
         expect(options.initialScope).toEqual({
-            tags: { service: "mike-frontend", runtime: "edge" },
+            tags: { service: "mike-frontend", runtime: "edge", install: "community" },
         });
         expect(options.beforeSend).toBe(scrubEvent);
     });
 
-    it("is disabled and defaults the environment without config", () => {
+    it("is ON BY DEFAULT without config, off with SENTRY_DISABLED, official only when marked", () => {
         const options = serverSentryOptions(
             "server",
             {} as unknown as NodeJS.ProcessEnv,
         );
-        expect(options.enabled).toBe(false);
-        expect(options.dsn).toBeUndefined();
+        expect(options.enabled).toBe(true);
+        expect(options.dsn).toBe(MIKE_SENTRY_DSN.frontend);
         expect(options.release).toBeUndefined();
-        expect(options.environment).toBe("development");
+        expect(options.environment).toBe("self-hosted");
         const withNodeEnv = serverSentryOptions("server", {
             NODE_ENV: "production",
         } as unknown as NodeJS.ProcessEnv);
-        expect(withNodeEnv.environment).toBe("production");
+        expect(withNodeEnv.environment).toBe("self-hosted");
+        const off = serverSentryOptions("server", {
+            SENTRY_DISABLED: "true",
+        } as unknown as NodeJS.ProcessEnv);
+        expect(off.enabled).toBe(false);
+        const official = serverSentryOptions("server", {
+            SENTRY_INSTALL: "official",
+        } as unknown as NodeJS.ProcessEnv);
+        expect((official.initialScope as { tags: { install: string } }).tags.install).toBe("official");
     });
 });
 

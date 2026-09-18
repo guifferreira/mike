@@ -99,7 +99,10 @@ test("a backend 5xx is reported with the route, status, and request id but no bo
     error_code: "internal_error",
   });
   // Signed in: the id travels, the email never does.
-  expect(event.user).toEqual({ id: expect.any(String) });
+  // The e2e bundle is a community install (no REACT_APP_SENTRY_INSTALL), so
+  // no user id leaves the machine at all; the request id is the correlation
+  // key and it survives.
+  expect(event.user).toBeUndefined();
   expect(JSON.stringify(event)).not.toContain("e2e@mike.local");
   expect(event).not.toHaveProperty("request.data");
   expect(event).not.toHaveProperty("request.cookies");

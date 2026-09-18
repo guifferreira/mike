@@ -11,8 +11,37 @@ Every Mike runtime can report unexpected failures to [Sentry](https://sentry.io)
 | Web app, Next.js server (the `/api` gateway) | `@sentry/nextjs` | `SENTRY_DSN` in the frontend's runtime environment |
 | Word add-in (task pane, ribbon commands, OAuth dialog) | `@sentry/react` | `REACT_APP_SENTRY_DSN` at **build** time |
 
-Nothing is sent, and nothing is instrumented, until a DSN is configured. An
-install that never sets one behaves exactly as before.
+**On by default.** Error reports are sent to the Mike project's own Sentry by default, so the
+maintainers can fix what forks and self-hosted installs run into. A report
+never contains document text, request bodies, cookies, auth headers, or email
+addresses; on a community install it also drops the machine name, user ids,
+request headers, breadcrumbs, device and locale details, and any absolute file
+path, keeping only where in Mike's own code the error happened, the route
+pattern, OS/runtime name and version, environment, and release. Everything is
+scrubbed in-process before it leaves your machine (see
+docs/observability.md). To opt out, set `SENTRY_DISABLED=true`
+(`NEXT_PUBLIC_SENTRY_DISABLED=true` / `REACT_APP_SENTRY_DISABLED=true` for the
+browser and add-in builds); to use your own Sentry instead, set the matching
+`*_SENTRY_DSN`.
+
+Resolution order, per runtime: `*_SENTRY_DISABLED=true` → off;
+`*_SENTRY_DSN` set → that DSN; otherwise the built-in Mike project DSN. Test
+processes (vitest, `NODE_ENV=test`) never report unless
+`SENTRY_ALLOW_IN_TESTS=true`. Every event carries `install=community` unless
+the deployment sets `SENTRY_INSTALL=official` (env, all three runtimes), and
+`environment` defaults to `self-hosted`, so the official deployment and the
+community are separable in Sentry. The boot log says which applies:
+`[sentry] enabled for api → Mike project Sentry (community install). Opt out
+with SENTRY_DISABLED=true or point SENTRY_DSN at your own project.`
+
+### The DSN is public by design
+
+A DSN only lets an SDK *post* events; reading them needs a login to the Sentry
+organisation. Anyone can copy it from this repository or a browser bundle and
+post junk, so the `mike-xp` organisation runs with spike protection on,
+"prevent storing of IP addresses" on for every project, and inbound filters
+available per project (block by IP, message, or release). If a key is ever
+abused, rotate it under the project's Client Keys and ship the new constant.
 
 ## What gets reported
 
@@ -129,8 +158,10 @@ integration and traces cost quota.
 Backend (`backend/.env`, read at process start):
 
 ```
-SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>
-SENTRY_ENVIRONMENT=production          # defaults to NODE_ENV
+SENTRY_DISABLED=false                  # true = send nothing
+SENTRY_DSN=                            # your own Sentry; empty = Mike project Sentry
+SENTRY_INSTALL=                        # "official" only on Mike's own deployment
+SENTRY_ENVIRONMENT=production          # defaults to self-hosted
 SENTRY_RELEASE=mike@1.4.0              # optional; defaults to mike@<git sha>
 SENTRY_TRACES_SAMPLE_RATE=0            # optional, 0..1
 SENTRY_ENABLE_TEST_ROUTE=false         # see "Verifying" below
@@ -151,6 +182,8 @@ SENTRY_ENVIRONMENT=production
 SENTRY_RELEASE=mike@1.4.0
 
 # or, building the frontend directly
+NEXT_PUBLIC_SENTRY_DISABLED=true       # browser opt-out (build time)
+NEXT_PUBLIC_SENTRY_INSTALL=official    # only on Mike's own deployment
 NEXT_PUBLIC_SENTRY_DSN=...             # browser (build time)
 NEXT_PUBLIC_SENTRY_ENVIRONMENT=...     # optional
 NEXT_PUBLIC_SENTRY_RELEASE=...         # optional
@@ -176,7 +209,8 @@ GIT_SHA=$(git rev-parse HEAD) docker compose build
 Word add-in (build time, `word-addin/.env` or the Docker build arguments):
 
 ```
-REACT_APP_SENTRY_DSN=...
+REACT_APP_SENTRY_DISABLED=true         # opt-out
+REACT_APP_SENTRY_DSN=...               # your own Sentry; empty = Mike project Sentry
 REACT_APP_SENTRY_ENVIRONMENT=...       # optional
 REACT_APP_SENTRY_RELEASE=...           # optional
 ```

@@ -20,12 +20,16 @@ COPY packages/contracts /packages/contracts
 # Browser-side Sentry DSN (optional). Inlined by next build, so it must be
 # present here rather than at container start. See docs/observability.md.
 ARG NEXT_PUBLIC_SENTRY_DSN=
+ARG NEXT_PUBLIC_SENTRY_DISABLED=
+ARG NEXT_PUBLIC_SENTRY_INSTALL=
 ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT=
 ARG NEXT_PUBLIC_SENTRY_RELEASE=
 # The commit this image was built from; the release tag when no explicit
 # release is given, for the browser bundle (inlined) and the Next server.
 ARG GIT_SHA=
 ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN \
+    NEXT_PUBLIC_SENTRY_DISABLED=$NEXT_PUBLIC_SENTRY_DISABLED \
+    NEXT_PUBLIC_SENTRY_INSTALL=$NEXT_PUBLIC_SENTRY_INSTALL \
     NEXT_PUBLIC_SENTRY_ENVIRONMENT=$NEXT_PUBLIC_SENTRY_ENVIRONMENT \
     NEXT_PUBLIC_SENTRY_RELEASE=$NEXT_PUBLIC_SENTRY_RELEASE \
     NEXT_PUBLIC_GIT_SHA=$GIT_SHA \

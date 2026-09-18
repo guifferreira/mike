@@ -406,10 +406,15 @@ services:
         NEXT_PUBLIC_SENTRY_DSN: ${FRONTEND_SENTRY_DSN:-}
         NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
         NEXT_PUBLIC_SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+        # Opt-out and install kind reach the browser bundle at build time.
+        NEXT_PUBLIC_SENTRY_DISABLED: ${SENTRY_DISABLED:-}
+        NEXT_PUBLIC_SENTRY_INSTALL: ${SENTRY_INSTALL:-}
         GIT_SHA: ${GIT_SHA:-}
     environment:
       - API_BASE_URL=${API_BASE_URL:-http://backend:3001}
       # Next server side (the /api gateway); same project as the browser.
+      - SENTRY_DISABLED=${SENTRY_DISABLED:-}
+      - SENTRY_INSTALL=${SENTRY_INSTALL:-}
       - SENTRY_DSN=${FRONTEND_SENTRY_DSN:-}
       - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-}
       - SENTRY_RELEASE=${SENTRY_RELEASE:-}

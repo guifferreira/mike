@@ -54,6 +54,7 @@ vi.mock("@sentry/node", () => ({
 import * as Sentry from "@sentry/node";
 import {
   bestEffort,
+  MIKE_SENTRY_DSN,
   flushSentry,
   initSentry,
   redactText,
@@ -86,13 +87,37 @@ afterEach(() => {
 });
 
 describe("sentryConfiguration", () => {
-  it("is disabled without a DSN and falls back to NODE_ENV for the environment", () => {
+  it("is ON BY DEFAULT: the Mike project DSN, a community install, environment self-hosted", () => {
     const config = sentryConfiguration({ NODE_ENV: "production" } as NodeJS.ProcessEnv);
-    expect(config.enabled).toBe(false);
-    expect(config.dsn).toBe("");
-    expect(config.environment).toBe("production");
+    expect(config.enabled).toBe(true);
+    expect(config.dsn).toBe(MIKE_SENTRY_DSN.backend);
+    expect(config.dsnSource).toBe("default");
+    expect(config.install).toBe("community");
+    // NODE_ENV no longer leaks into the environment tag: a fork's
+    // "production" is not ours.
+    expect(config.environment).toBe("self-hosted");
     expect(config.tracesSampleRate).toBe(0);
     expect(config.release).toBeUndefined();
+  });
+
+  it("is off with SENTRY_DISABLED=true, whatever else is set", () => {
+    const config = sentryConfiguration({
+      SENTRY_DISABLED: "true",
+      SENTRY_DSN: "https://key@o1.ingest.sentry.io/1",
+    } as NodeJS.ProcessEnv);
+    expect(config.enabled).toBe(false);
+    expect(config.dsn).toBe("");
+    expect(config.dsnSource).toBe("disabled");
+  });
+
+  it("uses a self-hoster's own DSN when set and marks the official deployment", () => {
+    const config = sentryConfiguration({
+      SENTRY_DSN: "https://key@self.example/9",
+      SENTRY_INSTALL: "official",
+    } as NodeJS.ProcessEnv);
+    expect(config.dsn).toBe("https://key@self.example/9");
+    expect(config.dsnSource).toBe("env");
+    expect(config.install).toBe("official");
   });
 
   it("reads the DSN, environment, release, and clamps the sample rate", () => {
@@ -187,7 +212,7 @@ describe("initSentry", () => {
     expect(options.environment).toBe("staging");
     expect(options.beforeSend).toBe(scrubEvent);
     expect(options.initialScope).toEqual({
-      tags: { service: "mike-backend", role: "worker" },
+      tags: { service: "mike-backend", role: "worker", install: "community" },
     });
     expect(sentryMock.httpIntegration).toHaveBeenCalledWith({
       maxIncomingRequestBodySize: "none",
@@ -714,5 +739,109 @@ describe("automatic captures of an already-reported error", () => {
     expect(
       scrubEvent(unhandledCopy, { originalException: unrelated }),
     ).not.toBeNull();
+  });
+});
+
+describe("community install minimisation", () => {
+  afterEach(() => resetSentryForTests());
+
+  it("sends only what our code owns and what is too broad to identify anyone", () => {
+    resetSentryForTests("community");
+    const event = {
+      server_name: "janes-macbook.local",
+      user: { id: "user-1" },
+      message: "ENOENT: /Users/jane/work/mike/backend/uploads/contract.pdf",
+      tags: { component: "http", server_name: "janes-macbook.local", url: "https://firm.example/x" },
+      request: {
+        url: "https://firm.example/projects/p-1",
+        method: "GET",
+        headers: { host: "firm.example", "user-agent": "curl" },
+      },
+      contexts: {
+        os: { name: "macOS", version: "26.5", kernel_version: "25.5.0", build: "25F80" },
+        runtime: { name: "node", version: "v22.23.1" },
+        device: { arch: "arm64", memory_size: 8 },
+        culture: { locale: "en-US", timezone: "America/Los_Angeles" },
+        app: { app_start_time: "2026-09-18T00:00:00Z" },
+        trace: { trace_id: "abc" },
+      },
+      breadcrumbs: [{ message: "user clicked" }],
+      extra: { job_id: "j1", error_stack: "at fn (/home/ubuntu/mike/backend/src/x.ts:3:1)" },
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value: "failed at /home/ubuntu/mike/backend/src/lib/x.ts and C:\\Users\\bob\\y",
+            stacktrace: {
+              frames: [
+                {
+                  filename: "/Users/jane/work/mike/node_modules/express/lib/router.js",
+                  abs_path: "/Users/jane/work/mike/node_modules/express/lib/router.js",
+                  in_app: false,
+                  context_line: "next(err)",
+                  vars: { secret: "x" },
+                },
+                {
+                  filename: "/Users/jane/work/mike/backend/src/lib/httpError.ts",
+                  abs_path: "/Users/jane/work/mike/backend/src/lib/httpError.ts",
+                  in_app: true,
+                  context_line: "reportError(error)",
+                },
+                { filename: "/opt/somewhere/else.js", in_app: false },
+              ],
+            },
+          },
+        ],
+      },
+    } as unknown as Sentry.ErrorEvent;
+
+    const out = scrubEvent(event, {})!;
+
+    expect(out.server_name).toBeUndefined();
+    expect(out.user).toBeUndefined();
+    expect(out.breadcrumbs).toBeUndefined();
+    expect(out.tags).toEqual({ component: "http" });
+    expect(out.request).toEqual({ method: "GET", url: "/projects/p-1" });
+    expect(out.contexts).toEqual({
+      os: { name: "macOS", version: "26.5" },
+      runtime: { name: "node", version: "v22.23.1" },
+      trace: { trace_id: "abc" },
+    });
+    expect(out.message).toBe("ENOENT: backend/uploads/contract.pdf");
+    expect(out.extra).toEqual({
+      job_id: "j1",
+      error_stack: "at fn (backend/src/x.ts:3:1)",
+    });
+    const value = out.exception!.values![0]!;
+    expect(value.value).toBe("failed at backend/src/lib/x.ts and [path]");
+    const frames = value.stacktrace!.frames!;
+    expect(frames[0]).toEqual({
+      filename: "node_modules/express/lib/router.js",
+      abs_path: "node_modules/express/lib/router.js",
+      in_app: false,
+    });
+    expect(frames[1]).toEqual({
+      filename: "backend/src/lib/httpError.ts",
+      abs_path: "backend/src/lib/httpError.ts",
+      in_app: true,
+      context_line: "reportError(error)",
+    });
+    expect(frames[2]).toEqual({ filename: "[external]", in_app: false });
+    expect(JSON.stringify(out)).not.toMatch(/jane|janes-macbook|firm\.example|ubuntu|bob|Los_Angeles/);
+  });
+
+  it("keeps the full shape on the official deployment", () => {
+    resetSentryForTests("official");
+    const out = scrubEvent(
+      {
+        server_name: "api-1",
+        user: { id: "user-1" },
+        breadcrumbs: [{ message: "x" }],
+      } as unknown as Sentry.ErrorEvent,
+      {},
+    )!;
+    expect(out.server_name).toBe("api-1");
+    expect(out.user).toEqual({ id: "user-1" });
+    expect(out.breadcrumbs).toHaveLength(1);
   });
 });

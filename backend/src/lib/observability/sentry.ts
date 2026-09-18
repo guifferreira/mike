@@ -263,12 +263,218 @@ export function redactShaped(value: unknown, depth = 0): unknown {
   }
   return value;
 }
+
+/**
+ * The Mike project's own Sentry projects. A DSN is a write-only address:
+ * it lets an SDK post events and nothing else, so it is public by design
+ * (it ships in every browser bundle). Community installs report here by
+ * default so the project learns what forks run into; the opt-out and the
+ * override are one variable each (see resolveDsn).
+ */
+export const MIKE_SENTRY_DSN = {
+  backend:
+    "https://c755fbcd344e1d4ac0dfc3b3c927b938@o4512103319207936.ingest.us.sentry.io/4512103323074560",
+  frontend:
+    "https://b5a10f7549e6bd0165d4e01d67e762cd@o4512103319207936.ingest.us.sentry.io/4512103326416896",
+  wordAddin:
+    "https://dcb3daf9d26bb576e94da2c584de63e8@o4512103319207936.ingest.us.sentry.io/4512103330349056",
+} as const;
+
+export type DsnResolution = {
+  dsn: string;
+  /** Where the DSN came from; "default" means the Mike project's Sentry. */
+  source: "disabled" | "env" | "default";
+};
+
+/**
+ * Off if the runtime's *_SENTRY_DISABLED is "true"; the runtime's own DSN
+ * when one is set (a self-hoster's own Sentry); otherwise the built-in Mike
+ * project DSN. Test processes are guarded separately by the caller.
+ */
+export function resolveDsn(input: {
+  disabled?: string;
+  dsn?: string;
+  fallback: string;
+}): DsnResolution {
+  if (input.disabled?.trim().toLowerCase() === "true") {
+    return { dsn: "", source: "disabled" };
+  }
+  const explicit = input.dsn?.trim();
+  if (explicit) return { dsn: explicit, source: "env" };
+  return { dsn: input.fallback, source: "default" };
+}
+
+export type InstallKind = "official" | "community";
+
+/** Only the official deployment sets SENTRY_INSTALL=official; all else is community. */
+export function installKind(raw: string | undefined): InstallKind {
+  return raw?.trim().toLowerCase() === "official" ? "official" : "community";
+}
+
+type CommunityFrame = {
+  filename?: unknown;
+  abs_path?: unknown;
+  in_app?: unknown;
+  vars?: unknown;
+  pre_context?: unknown;
+  context_line?: unknown;
+  post_context?: unknown;
+};
+type CommunityEvent = {
+  server_name?: unknown;
+  user?: unknown;
+  breadcrumbs?: unknown;
+  message?: unknown;
+  tags?: Record<string, unknown>;
+  extra?: Record<string, unknown>;
+  contexts?: Record<string, unknown>;
+  request?: { url?: unknown; method?: unknown } & Record<string, unknown>;
+  exception?: {
+    values?: { value?: unknown; stacktrace?: { frames?: CommunityFrame[] } }[];
+  };
+};
+
+const REPO_ROOTS = ["/backend/", "/frontend/", "/word-addin/", "/packages/"];
+/** Contexts broad enough not to identify anyone; each reduced to name + version. */
+const COMMUNITY_CONTEXTS = new Set(["os", "runtime", "browser", "trace"]);
+const FILESYSTEM_PATH_PATTERN =
+  /(?:\/(?:Users|home|app|var|tmp|opt|private|srv|mnt|data|root|etc)\/[^\s"'`)\]]*)|(?:[A-Za-z]:\\[^\s"'`)\]]*)/g;
+
+/**
+ * A code location without the machine it was found on: everything before
+ * the repository directory (`/Users/jane/work/mike/backend/src/x.ts` →
+ * `backend/src/x.ts`), the dependency path for node_modules, the URL path
+ * for browser bundles, and "[external]" for anything outside the project.
+ */
+export function repoRelativePath(path: string): string {
+  let idx = -1;
+  for (const root of REPO_ROOTS) {
+    const at = path.lastIndexOf(root);
+    if (at > idx) idx = at;
+  }
+  if (idx >= 0) return path.slice(idx + 1);
+  const nm = path.lastIndexOf("/node_modules/");
+  if (nm >= 0) return path.slice(nm + 1);
+  if (/^https?:\/\//.test(path)) return path.replace(/^https?:\/\/[^/]+/, "") || "/";
+  if (/^(webpack|app|node|file):/.test(path)) return path.replace(/^file:\/\/[^/]*/, "");
+  const src = path.lastIndexOf("/src/");
+  if (src >= 0) return path.slice(src + 1);
+  const dist = path.lastIndexOf("/dist/");
+  if (dist >= 0) return path.slice(dist + 1);
+  return "[external]";
+}
+
+/** Absolute filesystem paths inside free text → repo-relative or "[path]". */
+export function redactFilesystemPaths(text: string): string {
+  return text.replace(FILESYSTEM_PATH_PATTERN, (match) => {
+    const relative = repoRelativePath(match);
+    return relative === "[external]" ? "[path]" : relative;
+  });
+}
+
+function mapStringLeaves(
+  value: unknown,
+  fn: (text: string) => string,
+  depth = 0,
+): unknown {
+  if (depth > MAX_SCRUB_DEPTH) return value;
+  if (typeof value === "string") return fn(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => mapStringLeaves(item, fn, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as object)) {
+      out[key] = mapStringLeaves(entry, fn, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * COMMUNITY INSTALLS: a fork or self-hosted Mike reporting to the Mike
+ * project's Sentry sends only what our own code owns and what is too broad
+ * to identify anyone. Removed: the machine name, the user id, request
+ * headers and host, every breadcrumb, device / app / locale contexts, local
+ * variables, and any absolute filesystem path (in frames, messages, extras).
+ * Kept: repo-relative code locations with their source lines, our own tags
+ * and ids, the route pattern, OS / runtime / browser name and version,
+ * environment and release.
+ */
+export function minimiseForCommunity<T extends CommunityEvent>(event: T): T {
+  delete event.server_name;
+  delete event.user;
+  delete event.breadcrumbs;
+  if (event.tags) {
+    delete event.tags.server_name;
+    delete event.tags.url;
+  }
+  if (event.request) {
+    const url =
+      typeof event.request.url === "string"
+        ? event.request.url.replace(/^https?:\/\/[^/]+/, "")
+        : undefined;
+    const method = event.request.method;
+    event.request = {
+      ...(typeof method === "string" ? { method } : {}),
+      ...(url ? { url } : {}),
+    };
+  }
+  if (event.contexts) {
+    for (const key of Object.keys(event.contexts)) {
+      if (!COMMUNITY_CONTEXTS.has(key)) {
+        delete event.contexts[key];
+        continue;
+      }
+      const context = event.contexts[key];
+      if (key !== "trace" && context && typeof context === "object") {
+        const { name, version } = context as { name?: unknown; version?: unknown };
+        event.contexts[key] = {
+          ...(name !== undefined ? { name } : {}),
+          ...(version !== undefined ? { version } : {}),
+        };
+      }
+    }
+  }
+  if (typeof event.message === "string") {
+    event.message = redactFilesystemPaths(event.message);
+  }
+  for (const value of event.exception?.values ?? []) {
+    if (typeof value.value === "string") {
+      value.value = redactFilesystemPaths(value.value);
+    }
+    for (const frame of value.stacktrace?.frames ?? []) {
+      if (typeof frame.filename === "string") {
+        frame.filename = repoRelativePath(frame.filename);
+      }
+      if (typeof frame.abs_path === "string") {
+        frame.abs_path = repoRelativePath(frame.abs_path);
+      }
+      delete frame.vars;
+      if (frame.in_app !== true) {
+        delete frame.pre_context;
+        delete frame.context_line;
+        delete frame.post_context;
+      }
+    }
+  }
+  if (event.extra) {
+    event.extra = mapStringLeaves(event.extra, redactFilesystemPaths) as Record<
+      string,
+      unknown
+    >;
+  }
+  return event;
+}
 // END shared-redaction
 
 /** Errors already sent via reportError(); the console bridge skips them. */
 const reportedErrors = new WeakSet<object>();
 
 let initialized = false;
+/** What this process is; community installs get the minimised event shape. */
+let currentInstall: InstallKind = "community";
 
 function parseRate(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
@@ -278,7 +484,15 @@ function parseRate(raw: string | undefined, fallback: number): number {
 }
 
 export function sentryConfiguration(env: NodeJS.ProcessEnv = process.env) {
-  const dsn = env.SENTRY_DSN?.trim() ?? "";
+  // ON BY DEFAULT: without SENTRY_DISABLED or a DSN of your own, errors go
+  // to the Mike project's Sentry as a community install (see the README's
+  // Telemetry section). Only Mike's own deployment sets SENTRY_INSTALL.
+  const resolved = resolveDsn({
+    disabled: env.SENTRY_DISABLED,
+    dsn: env.SENTRY_DSN,
+    fallback: MIKE_SENTRY_DSN.backend,
+  });
+  const dsn = resolved.dsn;
   // A test process must never report, even when a developer's backend/.env
   // carries a real DSN: the suite deliberately points workers at dead ports
   // and would flood the project with fake failures.
@@ -286,11 +500,12 @@ export function sentryConfiguration(env: NodeJS.ProcessEnv = process.env) {
     env.NODE_ENV === "test" || env.VITEST === "true" || env.VITEST === "1";
   return {
     dsn,
+    dsnSource: resolved.source,
+    install: installKind(env.SENTRY_INSTALL),
     enabled:
       dsn.length > 0 &&
       (!isTestProcess || env.SENTRY_ALLOW_IN_TESTS === "true"),
-    environment:
-      env.SENTRY_ENVIRONMENT?.trim() || env.NODE_ENV?.trim() || "development",
+    environment: env.SENTRY_ENVIRONMENT?.trim() || "self-hosted",
     // An explicit SENTRY_RELEASE wins; otherwise the git commit the image
     // was built from (GIT_SHA, a Dockerfile build arg) — what lets Sentry
     // say "regressed in this deploy" and resolve an issue until the next.
@@ -514,6 +729,11 @@ export function scrubEvent(
         : {}),
     }));
   }
+  if (currentInstall === "community") {
+    minimiseForCommunity(
+      event as unknown as Parameters<typeof minimiseForCommunity>[0],
+    );
+  }
   if (!withinIssueBudget(event)) return null;
   return event;
 }
@@ -531,12 +751,17 @@ export function initSentry(
   const config = sentryConfiguration(env);
   if (!config.enabled) {
     if (env.NODE_ENV !== "test") {
-      console.log(`[sentry] disabled for ${role} (SENTRY_DSN is not set)`);
+      console.log(
+        `[sentry] disabled for ${role} (${
+          config.dsnSource === "disabled" ? "SENTRY_DISABLED=true" : "test process"
+        })`,
+      );
     }
     return false;
   }
 
   maxEventsPerIssuePerMinute = config.maxEventsPerIssuePerMinute;
+  currentInstall = config.install;
   Sentry.init({
     dsn: config.dsn,
     environment: config.environment,
@@ -558,15 +783,22 @@ export function initSentry(
       Sentry.onUnhandledRejectionIntegration({ mode: "strict" }),
     ],
     initialScope: {
-      tags: { service: "mike-backend", role },
+      tags: { service: "mike-backend", role, install: config.install },
     },
     beforeSend: scrubEvent,
   });
   initialized = true;
-  console.log(
-    `[sentry] enabled for ${role} (environment ${config.environment}` +
-      `${config.release ? `, release ${config.release}` : ""})`,
-  );
+  if (config.dsnSource === "default") {
+    console.log(
+      `[sentry] enabled for ${role} → Mike project Sentry (${config.install} install). ` +
+        "Opt out with SENTRY_DISABLED=true or point SENTRY_DSN at your own project.",
+    );
+  } else {
+    console.log(
+      `[sentry] enabled for ${role} (environment ${config.environment}` +
+        `${config.release ? `, release ${config.release}` : ""})`,
+    );
+  }
   return true;
 }
 
@@ -708,8 +940,10 @@ function describe(value: unknown): string {
 }
 
 /** Test seam: forget init and throttle state between unit tests. */
-export function resetSentryForTests(): void {
+export function resetSentryForTests(install: InstallKind = "official"): void {
   initialized = false;
+  // Tests exercise the full event shape unless they opt into community mode.
+  currentInstall = install;
   throttleBuckets.clear();
   maxEventsPerIssuePerMinute = DEFAULT_MAX_EVENTS_PER_ISSUE_PER_MINUTE;
 }

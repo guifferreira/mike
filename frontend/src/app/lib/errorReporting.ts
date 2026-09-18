@@ -7,10 +7,13 @@
 
 import * as Sentry from "@sentry/nextjs";
 import {
+    MIKE_SENTRY_DSN,
     createEventScrubber,
+    installKind,
     normalizeApiPath,
     parseSampleRate,
     releaseName,
+    resolveDsn,
 } from "@/shared/lib/sentryEvent";
 
 export type ReportLevel = "fatal" | "error" | "warning";
@@ -22,7 +25,13 @@ export type ReportContext = {
     fingerprint?: string[];
 };
 
-const scrubber = createEventScrubber();
+// NEXT_PUBLIC_* is inlined into the browser bundle at build time; the Next
+// server reads SENTRY_INSTALL at runtime. Anything but "official" is a
+// community install and gets the minimised event shape.
+const install = installKind(
+    process.env.NEXT_PUBLIC_SENTRY_INSTALL ?? process.env.SENTRY_INSTALL,
+);
+const scrubber = createEventScrubber({ install });
 
 /** `beforeSend` for every Sentry client in the web app (browser, server, edge). */
 export const scrubEvent = scrubber.scrubEvent;
@@ -140,25 +149,39 @@ export function setReportingUser(user: { id: string } | null): void {
  * them in; everything policy-shaped is decided here.
  */
 export function browserSentryOptions(env: {
+    disabled?: string;
     dsn?: string;
+    install?: string;
     environment?: string;
     release?: string;
     gitSha?: string;
     tracesSampleRate?: string;
     nodeEnv?: string;
 }): Sentry.BrowserOptions {
-    const dsn = env.dsn?.trim() ?? "";
+    // ON BY DEFAULT: the Mike project's own DSN unless NEXT_PUBLIC_SENTRY_DISABLED
+    // or a DSN of your own is baked in at build time (README, "Telemetry").
+    const { dsn } = resolveDsn({
+        disabled: env.disabled,
+        dsn: env.dsn,
+        fallback: MIKE_SENTRY_DSN.frontend,
+    });
     return {
         dsn: dsn || undefined,
         enabled: dsn.length > 0,
-        environment: env.environment?.trim() || env.nodeEnv || "development",
+        environment: env.environment?.trim() || "self-hosted",
         release: releaseName(env.release, env.gitSha),
         tracesSampleRate: parseSampleRate(env.tracesSampleRate, 0),
         // Session replay is deliberately NOT enabled: it would record
         // privileged document text on screen.
         sendDefaultPii: false,
         integrations: [Sentry.captureConsoleIntegration({ levels: ["error"] })],
-        initialScope: { tags: { service: "mike-frontend", runtime: "browser" } },
+        initialScope: {
+            tags: {
+                service: "mike-frontend",
+                runtime: "browser",
+                install: installKind(env.install),
+            },
+        },
         beforeSend: scrubEvent,
     };
 }
@@ -168,16 +191,25 @@ export function serverSentryOptions(
     runtime: "server" | "edge",
     env: NodeJS.ProcessEnv,
 ): Sentry.NodeOptions {
-    const dsn = env.SENTRY_DSN?.trim() ?? "";
+    const { dsn } = resolveDsn({
+        disabled: env.SENTRY_DISABLED,
+        dsn: env.SENTRY_DSN,
+        fallback: MIKE_SENTRY_DSN.frontend,
+    });
     return {
         dsn: dsn || undefined,
         enabled: dsn.length > 0,
-        environment:
-            env.SENTRY_ENVIRONMENT?.trim() || env.NODE_ENV || "development",
+        environment: env.SENTRY_ENVIRONMENT?.trim() || "self-hosted",
         release: releaseName(env.SENTRY_RELEASE, env.GIT_SHA),
         tracesSampleRate: parseSampleRate(env.SENTRY_TRACES_SAMPLE_RATE, 0),
         sendDefaultPii: false,
-        initialScope: { tags: { service: "mike-frontend", runtime } },
+        initialScope: {
+            tags: {
+                service: "mike-frontend",
+                runtime,
+                install: installKind(env.SENTRY_INSTALL),
+            },
+        },
         beforeSend: scrubEvent,
     };
 }

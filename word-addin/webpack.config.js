@@ -281,7 +281,9 @@ module.exports = async (_env, options) => {
           : undefined,
         // Sentry is off unless a DSN is baked in at build time (the pane is
         // a static bundle; there is no runtime environment to read).
+        REACT_APP_SENTRY_DISABLED: process.env.REACT_APP_SENTRY_DISABLED || "",
         REACT_APP_SENTRY_DSN: process.env.REACT_APP_SENTRY_DSN || "",
+        REACT_APP_SENTRY_INSTALL: process.env.REACT_APP_SENTRY_INSTALL || "",
         REACT_APP_SENTRY_ENVIRONMENT:
           process.env.REACT_APP_SENTRY_ENVIRONMENT || "",
         REACT_APP_SENTRY_RELEASE: process.env.REACT_APP_SENTRY_RELEASE || "",

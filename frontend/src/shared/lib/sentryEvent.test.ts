@@ -9,6 +9,12 @@ import {
     redactUrl,
     releaseName,
     redactText,
+    MIKE_SENTRY_DSN,
+    installKind,
+    minimiseForCommunity,
+    redactFilesystemPaths,
+    repoRelativePath,
+    resolveDsn,
 } from "./sentryEvent";
 
 describe("redactSensitiveValues", () => {
@@ -39,7 +45,7 @@ describe("redactSensitiveValues", () => {
 
 describe("createEventScrubber", () => {
     it("strips request bodies, cookies, credential headers, and user details", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         const event = scrubEvent({
             request: {
                 data: "privileged body",
@@ -64,17 +70,17 @@ describe("createEventScrubber", () => {
     });
 
     it("drops a user without an id entirely", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         expect(scrubEvent({ user: {} })!.user).toBeUndefined();
     });
 
     it("leaves an event without optional sections untouched", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         expect(scrubEvent({})).toEqual({});
     });
 
     it("discards the console bridge's copy of an already-reported error only", () => {
-        const { markReported, scrubEvent } = createEventScrubber();
+        const { markReported, scrubEvent } = createEventScrubber({ install: "official" });
         const reported = new Error("reported");
         markReported(reported);
         markReported("not an object");
@@ -107,6 +113,7 @@ describe("per-issue flood control", () => {
     it("passes the first N events of an issue per minute and drops the rest", () => {
         let clock = 1_000;
         const { scrubEvent } = createEventScrubber({
+            install: "official",
             maxEventsPerIssuePerMinute: 2,
             now: () => clock,
         });
@@ -123,7 +130,7 @@ describe("per-issue flood control", () => {
     });
 
     it("keys on the fingerprint when present", () => {
-        const { scrubEvent } = createEventScrubber({ maxEventsPerIssuePerMinute: 1 });
+        const { scrubEvent } = createEventScrubber({ install: "official", maxEventsPerIssuePerMinute: 1 });
         expect(
             scrubEvent({ fingerprint: ["api-5xx"], message: "a" }),
         ).not.toBeNull();
@@ -131,7 +138,7 @@ describe("per-issue flood control", () => {
     });
 
     it("defaults to ten per minute", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         for (let i = 0; i < 10; i += 1) {
             expect(scrubEvent(exceptionEvent("ten"))).not.toBeNull();
         }
@@ -145,7 +152,7 @@ describe("console bridge post-processing", () => {
     });
 
     it("drops a console message whose logged object wraps a reported error", () => {
-        const { markReported, scrubEvent } = createEventScrubber();
+        const { markReported, scrubEvent } = createEventScrubber({ install: "official" });
         const error = new Error("nested");
         markReported(error);
         expect(
@@ -157,7 +164,7 @@ describe("console bridge post-processing", () => {
     });
 
     it("retitles a message around an unreported nested error and groups by label", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         const error = new RangeError("too deep");
         const event: ScrubbableEvent = {
             logger: "console",
@@ -171,7 +178,7 @@ describe("console bridge post-processing", () => {
     });
 
     it("does not retitle when the only error is a top-level argument (already an exception event)", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         const scrubbed = scrubEvent(
             { logger: "console", message: "kept" },
             consoleHint(["label", new Error("top")]),
@@ -180,7 +187,7 @@ describe("console bridge post-processing", () => {
     });
 
     it("ignores non-console events and malformed hints", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         expect(
             scrubEvent({ message: "m" }, consoleHint([{ error: new Error("x") }]))!
                 .message,
@@ -202,7 +209,7 @@ describe("console bridge post-processing", () => {
     });
 
     it("stops searching past two levels of nesting", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         const scrubbed = scrubEvent(
             { logger: "console", message: "m" },
             consoleHint([{ a: { b: { c: new Error("deep") } } }]),
@@ -248,7 +255,7 @@ describe("redactUrl", () => {
 
 describe("scrubEvent URL hygiene", () => {
     it("redacts request url, query string, url-shaped extras and breadcrumb urls", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         const out = scrubEvent({
             request: {
                 url: "https://app.local/api/download/tok?x=1",
@@ -274,7 +281,7 @@ describe("scrubEvent URL hygiene", () => {
 
 describe("query parameter forms", () => {
     it("filters credential keys whether the SDK sends a string, a map, or pairs", () => {
-        const { scrubEvent } = createEventScrubber();
+        const { scrubEvent } = createEventScrubber({ install: "official" });
         const asMap = scrubEvent({ request: { query_string: { code: "A", page: "2" } } })!;
         expect(asMap.request?.query_string).toEqual({ code: "[Filtered]", page: "2" });
         const asPairs = scrubEvent({
@@ -345,7 +352,7 @@ describe("value-level redaction (due-diligence findings)", () => {
             ],
         };
 
-        const out = JSON.stringify(createEventScrubber().scrubEvent(event, {}));
+        const out = JSON.stringify(createEventScrubber({ install: "official" }).scrubEvent(event, {}));
 
         for (const secret of SECRETS) expect(out).not.toContain(secret);
         // What must survive: the shape of the failure and the ids to find it.
@@ -368,7 +375,7 @@ describe("value-level redaction (due-diligence findings)", () => {
 
 describe("automatic captures of an already-reported error", () => {
     it("drops the global handler's copy (handled: false) but keeps the explicit capture", () => {
-        const { markReported, scrubEvent } = createEventScrubber();
+        const { markReported, scrubEvent } = createEventScrubber({ install: "official" });
         const failure = new Error("API 502");
         markReported(failure);
 
@@ -387,5 +394,69 @@ describe("automatic captures of an already-reported error", () => {
         expect(
             scrubEvent(unhandled, { originalException: new Error("other") }),
         ).not.toBeNull();
+    });
+});
+
+describe("resolveDsn", () => {
+    it("is off when disabled, uses an explicit DSN, else the built-in Mike DSN", () => {
+        expect(resolveDsn({ disabled: "true", dsn: "https://x@y/1", fallback: MIKE_SENTRY_DSN.frontend })).toEqual({ dsn: "", source: "disabled" });
+        expect(resolveDsn({ disabled: "TRUE ", fallback: "f" })).toEqual({ dsn: "", source: "disabled" });
+        expect(resolveDsn({ disabled: "false", dsn: " https://x@y/1 ", fallback: "f" })).toEqual({ dsn: "https://x@y/1", source: "env" });
+        expect(resolveDsn({ dsn: "", fallback: MIKE_SENTRY_DSN.wordAddin })).toEqual({ dsn: MIKE_SENTRY_DSN.wordAddin, source: "default" });
+    });
+
+    it("only an explicit 'official' marks the official deployment", () => {
+        expect(installKind("official")).toBe("official");
+        expect(installKind(" Official ")).toBe("official");
+        expect(installKind(undefined)).toBe("community");
+        expect(installKind("")).toBe("community");
+        expect(installKind("yes")).toBe("community");
+    });
+});
+
+describe("community install minimisation", () => {
+    it("relativises code locations and redacts filesystem paths in text", () => {
+        expect(repoRelativePath("/Users/jane/work/mike/backend/src/lib/x.ts")).toBe("backend/src/lib/x.ts");
+        expect(repoRelativePath("/app/frontend/src/app/page.tsx")).toBe("frontend/src/app/page.tsx");
+        expect(repoRelativePath("/srv/mike/node_modules/react/index.js")).toBe("node_modules/react/index.js");
+        expect(repoRelativePath("https://firm.example/_next/static/chunks/main.js")).toBe("/_next/static/chunks/main.js");
+        expect(repoRelativePath("/opt/other/tool.js")).toBe("[external]");
+        expect(redactFilesystemPaths("read /home/u/mike/backend/src/a.ts then /var/lib/x")).toBe("read backend/src/a.ts then [path]");
+        expect(redactFilesystemPaths("C:\\Users\\bob\\file.txt failed")).toBe("[path] failed");
+    });
+
+    it("is the default for createEventScrubber and strips machine, user, headers, breadcrumbs, and narrow contexts", () => {
+        const { scrubEvent } = createEventScrubber();
+        const out = scrubEvent({
+            server_name: "janes-macbook.local",
+            user: { id: "user-1" },
+            breadcrumbs: [{ message: "user clicked" }],
+            tags: { component: "mike-api", server_name: "janes-macbook.local" },
+            request: { url: "https://firm.example/api/projects/1", method: "POST", headers: { host: "firm.example" } },
+            contexts: {
+                browser: { name: "Chrome", version: "128" },
+                device: { screen_resolution: "1440x900" },
+                culture: { timezone: "Europe/Berlin" },
+            },
+            exception: {
+                values: [{ value: "boom", stacktrace: { frames: [{ filename: "/Users/jane/mike/frontend/src/app/x.tsx", in_app: true }] } }],
+            },
+        })!;
+        expect(out.server_name).toBeUndefined();
+        expect(out.user).toBeUndefined();
+        expect(out.breadcrumbs).toBeUndefined();
+        expect(out.tags).toEqual({ component: "mike-api" });
+        expect(out.request).toEqual({ method: "POST", url: "/api/projects/1" });
+        expect(out.contexts).toEqual({ browser: { name: "Chrome", version: "128" } });
+        expect(out.exception?.values?.[0]?.stacktrace?.frames?.[0]?.filename).toBe("frontend/src/app/x.tsx");
+        expect(JSON.stringify(out)).not.toMatch(/jane|firm\.example|Berlin/);
+    });
+
+    it("keeps the full shape for the official install", () => {
+        const { scrubEvent } = createEventScrubber({ install: "official" });
+        const out = scrubEvent({ server_name: "web-1", user: { id: "u" }, breadcrumbs: [{ message: "m" }] })!;
+        expect(out.server_name).toBe("web-1");
+        expect(out.user).toEqual({ id: "u" });
+        expect(out.breadcrumbs).toHaveLength(1);
     });
 });

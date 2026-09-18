@@ -11,10 +11,13 @@
  */
 import * as Sentry from "@sentry/react";
 import {
+  MIKE_SENTRY_DSN,
   createEventScrubber,
+  installKind,
   normalizeApiPath,
   parseSampleRate,
   releaseName,
+  resolveDsn,
 } from "@mike/sentry-event";
 
 export type ReportLevel = "fatal" | "error" | "warning";
@@ -26,7 +29,9 @@ export type ReportContext = {
   fingerprint?: string[];
 };
 
-const scrubber = createEventScrubber();
+const scrubber = createEventScrubber({
+  install: installKind(process.env.REACT_APP_SENTRY_INSTALL),
+});
 
 export const scrubEvent = scrubber.scrubEvent;
 
@@ -36,7 +41,9 @@ export type AddinSurface = "taskpane" | "commands" | "oauth-dialog";
 export function addinSentryOptions(
   surface: AddinSurface,
   env: {
+    disabled?: string;
     dsn?: string;
+    install?: string;
     environment?: string;
     release?: string;
     gitSha?: string;
@@ -44,17 +51,29 @@ export function addinSentryOptions(
     nodeEnv?: string;
   },
 ): Sentry.BrowserOptions {
-  const dsn = env.dsn?.trim() ?? "";
+  // ON BY DEFAULT: the Mike project's own DSN unless REACT_APP_SENTRY_DISABLED
+  // or a DSN of your own is baked in at build time (README, "Telemetry").
+  const { dsn } = resolveDsn({
+    disabled: env.disabled,
+    dsn: env.dsn,
+    fallback: MIKE_SENTRY_DSN.wordAddin,
+  });
   return {
     dsn: dsn || undefined,
     enabled: dsn.length > 0,
-    environment: env.environment?.trim() || env.nodeEnv || "development",
+    environment: env.environment?.trim() || "self-hosted",
     release: releaseName(env.release, env.gitSha),
     tracesSampleRate: parseSampleRate(env.tracesSampleRate, 0),
     // No session replay: the pane sits next to a privileged document.
     sendDefaultPii: false,
     integrations: [Sentry.captureConsoleIntegration({ levels: ["error"] })],
-    initialScope: { tags: { service: "mike-word-addin", surface } },
+    initialScope: {
+      tags: {
+        service: "mike-word-addin",
+        surface,
+        install: installKind(env.install),
+      },
+    },
     beforeSend: scrubEvent,
   };
 }
@@ -62,7 +81,9 @@ export function addinSentryOptions(
 /** Initialise once per bundle entry (task pane, commands, OAuth dialog). */
 export function initAddinErrorReporting(surface: AddinSurface): boolean {
   const options = addinSentryOptions(surface, {
+    disabled: process.env.REACT_APP_SENTRY_DISABLED,
     dsn: process.env.REACT_APP_SENTRY_DSN,
+    install: process.env.REACT_APP_SENTRY_INSTALL,
     environment: process.env.REACT_APP_SENTRY_ENVIRONMENT,
     release: process.env.REACT_APP_SENTRY_RELEASE,
     gitSha: process.env.REACT_APP_GIT_SHA,

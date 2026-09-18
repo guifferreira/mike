@@ -8,7 +8,9 @@ import { browserSentryOptions } from "@/app/lib/errorReporting";
 
 Sentry.init(
     browserSentryOptions({
+        disabled: process.env.NEXT_PUBLIC_SENTRY_DISABLED,
         dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+        install: process.env.NEXT_PUBLIC_SENTRY_INSTALL,
         environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT,
         release: process.env.NEXT_PUBLIC_SENTRY_RELEASE,
         gitSha: process.env.NEXT_PUBLIC_GIT_SHA,
