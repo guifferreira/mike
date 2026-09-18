@@ -56,6 +56,7 @@ import {
   bestEffort,
   flushSentry,
   initSentry,
+  redactText,
   redactUrl,
   isSentryEnabled,
   reportError,
@@ -234,12 +235,15 @@ describe("scrubEvent", () => {
       headers: { "content-type": "application/json" },
     });
     expect(scrubbed.user).toEqual({ id: "user-1" });
+    // extra and breadcrumb data are ALLOWLISTED: a key this codebase does
+    // not attach on purpose ("nested", "list", "ok") is dropped whatever it
+    // holds, because a document field has no telltale name.
     expect(scrubbed.extra).toEqual({
-      nested: { api_key: "[Filtered]", refreshToken: "[Filtered]", note: "keep" },
-      list: [{ password: "[Filtered]" }],
+      nested: "[Filtered]",
+      list: "[Filtered]",
     });
     expect(scrubbed.breadcrumbs).toEqual([
-      { message: "x", data: { cookie: "[Filtered]", ok: 1 } },
+      { message: "x", data: { cookie: "[Filtered]", ok: "[Filtered]" } },
     ]);
   });
 
@@ -615,5 +619,66 @@ describe("bestEffort", () => {
     // warn, not error: the console bridge only listens at error level, so
     // the explicit report above is the one event and this line is the log.
     expect(warn).toHaveBeenCalledOnce();
+  });
+});
+
+describe("value-level redaction (due-diligence findings)", () => {
+  const SECRETS = [
+    "sk-ant-api03-abcdefghijklmnop",
+    "Bearer eyJhbGciOi.secret.sig",
+    "eyJhbGciOi.secret.sig",
+    "jane.doe@bigfirm.com",
+    "X-Amz-Signature=deadbeef",
+    "AKIAABCDEFGHIJKLMNOP",
+    "PRIVILEGED settlement",
+  ];
+
+  it("leaves none of a key, a bearer token, a JWT, an email, a signed URL, or a stray document field anywhere on the event", () => {
+    const event = {
+      message: "Bearer eyJhbGciOi.secret.sig for jane.doe@bigfirm.com",
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value:
+              'duplicate key value violates unique constraint "profiles_email_key" DETAIL: Key (email)=(jane.doe@bigfirm.com) already exists. key sk-ant-api03-abcdefghijklmnop',
+          },
+        ],
+      },
+      extra: {
+        presigned:
+          "https://s3.example/k?X-Amz-Signature=deadbeef&X-Amz-Credential=AKIAABCDEFGHIJKLMNOP",
+        doc_text: "PRIVILEGED settlement $4.2m",
+        job_id: "j1",
+        detail: "user jane.doe@bigfirm.com hit AKIAABCDEFGHIJKLMNOP",
+        arguments: ["[x] failed", { documentId: "d1", note: "PRIVILEGED settlement" }],
+      },
+      contexts: { app: { note: "sk-ant-api03-abcdefghijklmnop" } },
+      breadcrumbs: [
+        {
+          message: "user jane.doe@bigfirm.com Bearer eyJhbGciOi.secret.sig",
+          data: { url: "https://x/?token=1", free: "PRIVILEGED settlement" },
+        },
+      ],
+    } as unknown as Sentry.ErrorEvent;
+
+    const out = JSON.stringify(scrubEvent(event, {}));
+
+    for (const secret of SECRETS) expect(out).not.toContain(secret);
+    // What must survive: the shape of the failure and the ids to find it.
+    expect(out).toContain('"job_id":"j1"');
+    expect(out).toContain('"documentId":"d1"');
+    expect(out).toContain("profiles_email_key");
+    expect(out).toContain("[email]");
+  });
+
+  it("redactText handles each secret class on its own", () => {
+    expect(redactText("key sk-ant-api03-abcdefghijklmnop here")).toBe("key [api-key] here");
+    expect(redactText("Authorization: Bearer abc.def-ghi")).toBe("Authorization: Bearer [Filtered]");
+    expect(redactText("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig")).toBe("jwt [jwt]");
+    expect(redactText("mail a.b+c@d.co and https://s3/x?X-Amz-Signature=1&X-Amz-Expires=60")).toBe(
+      "mail [email] and https://s3/x?X-Amz-Signature=[Filtered]&X-Amz-Expires=60",
+    );
+    expect(redactText("plain message with nothing in it")).toBe("plain message with nothing in it");
   });
 });

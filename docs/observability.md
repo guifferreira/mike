@@ -95,9 +95,20 @@ Mike handles privileged legal documents, so the SDKs run with
 - redacts credentials carried in URLs: the token in `/download/<token>`, the
   `code` and `state` of an OAuth callback, and the signature fields of a
   presigned storage URL, wherever a URL appears (request, extras, breadcrumbs);
-- replaces the value of any key that looks like a secret (`token`, `secret`,
-  `password`, `api_key`, `authorization`, `cookie`, `credential`, ...) anywhere
-  in the event's extra data, contexts, or breadcrumbs with `[Filtered]`.
+- redacts secrets and identities inside free text wherever it appears (the
+  issue title, the exception message, extras, breadcrumbs): bearer tokens,
+  JWTs, provider keys (`sk-…`, `AKIA…`, GitHub and Slack tokens), email
+  addresses, and the query strings of URLs. A Postgres error quoting
+  `Key (email)=(…)` arrives as `Key (email)=([email])`;
+- keeps only an allowlist of keys under `extra` and breadcrumb data (job,
+  document, session, file, review and request ids, error name/message/stack,
+  path/url, status/code). Any other key is replaced with `[Filtered]`,
+  because a field holding document text has no telltale name. Extend the
+  allowlist in the `shared-redaction` block (one block, mirrored in the
+  backend and shared scrubbers; a test fails if the copies differ);
+- replaces the value of any secret-looking key (`token`, `secret`,
+  `password`, `api_key`, `authorization`, `cookie`, `credential`, ...) in the
+  SDK's own contexts with `[Filtered]`.
 
 Session replay is not enabled anywhere and should not be: it would record the
 document open next to the pane.

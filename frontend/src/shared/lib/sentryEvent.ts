@@ -19,6 +19,12 @@
 
 export const CONSOLE_CAPTURE_MECHANISM = "auto.core.capture_console";
 
+// BEGIN shared-redaction
+// This block is the privacy control for every runtime. It is authored once
+// and mirrored, indentation aside, between backend/src/lib/observability/
+// sentry.ts and frontend/src/shared/lib/sentryEvent.ts (the backend cannot
+// import the frontend tree at build time). sentryEvent.sync.test.ts fails
+// the moment the two copies differ, so edit both or neither.
 const SENSITIVE_HEADERS = new Set([
     "authorization",
     "cookie",
@@ -28,30 +34,25 @@ const SENSITIVE_HEADERS = new Set([
 ]);
 const SENSITIVE_KEY_PATTERN =
     /(token|secret|password|passwd|authorization|cookie|api[-_]?key|credential|private[-_]?key)/i;
-const MAX_DEPTH = 6;
-
+const MAX_SCRUB_DEPTH = 6;
 /**
- * Query parameters whose VALUE is a credential, plus the two OAuth callback
- * parameters (an authorization code is single-use but still a credential
- * until it is exchanged) and S3 presigned-URL signature fields.
- */
+  * Query parameters whose VALUE is a credential, plus the two OAuth callback
+  * parameters (an authorization code is single-use but still a credential
+  * until it is exchanged) and S3 presigned-URL signature fields.
+  */
 const SENSITIVE_QUERY_PATTERN =
     /(token|secret|password|passwd|authorization|cookie|api[-_]?key|credential|private[-_]?key|signature|^code$|^state$|^sig$|^x-amz-(signature|credential|security-token)$)/i;
 /** Path segments whose NEXT segment is a token: GET /download/<token>. */
 const TOKEN_PATH_SEGMENTS = new Set(["download"]);
-/** Object keys whose string value is a URL and must go through redactUrl. */
+/** Keys whose string value is a path or URL: redactUrl sees bare paths too. */
 const URL_KEY_PATTERN =
     /^(url|href|path|query_string|referer|referrer|location|redirect(_uri)?)$/i;
 
 /**
- * Strip credentials from a URL or path while keeping it recognisable:
- * `/download/<token>` → `/download/[Filtered]`, `?code=…&state=…` →
- * `?code=[Filtered]&state=[Filtered]`. The SDK's request integration puts
- * the full URL and query string on every HTTP event and the breadcrumb
- * integration records outgoing request URLs, so this is the only way a
- * download token, an OAuth code, or a presigned storage URL stays out of
- * Sentry.
- */
+  * Strip credentials from a URL or path while keeping it recognisable:
+  * `/download/<token>` → `/download/[Filtered]`, `?code=…&state=…` →
+  * `?code=[Filtered]&state=[Filtered]`.
+  */
 export function redactUrl(value: string): string {
     const queryStart = value.indexOf("?");
     const pathPart = queryStart === -1 ? value : value.slice(0, queryStart);
@@ -78,6 +79,8 @@ function redactQueryString(query: string): string {
     return query
         .split("&")
         .map((pair) => {
+            // Idempotent: text redaction may run over an already scrubbed URL.
+            if (pair.endsWith("=[Filtered]")) return pair;
             const eq = pair.indexOf("=");
             const key = eq === -1 ? pair : pair.slice(0, eq);
             let name = key;
@@ -113,6 +116,136 @@ function redactQueryParams(value: unknown): unknown {
     return value;
 }
 
+/**
+  * Secrets and identities that appear INSIDE free text: a Postgres error
+  * quoting the email it collided on, an HTTP client echoing an Authorization
+  * header, a provider key in a stack frame, a presigned URL in a log line.
+  * Key-based filtering cannot see any of these, so every string that lands
+  * on an event — the title, the exception text, extras, breadcrumbs — goes
+  * through here. Order matters: URLs first so their query strings are
+  * handled by redactUrl, then bearer tokens before the bare-JWT pattern.
+  */
+const TEXT_PATTERNS: Array<[RegExp, string | ((match: string) => string)]> = [
+    [/https?:\/\/[^\s"'<>]+/g, (match) => redactUrl(match)],
+    [/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [Filtered]"],
+    [/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{2,}(?:\.[A-Za-z0-9_-]*)?/g, "[jwt]"],
+    [/\bsk-[A-Za-z0-9_-]{8,}/g, "[api-key]"],
+    [/\bAKIA[0-9A-Z]{16}\b/g, "[aws-key]"],
+    [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}/g, "[github-token]"],
+    [/\bxox[abprs]-[A-Za-z0-9-]{8,}/g, "[slack-token]"],
+    [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]"],
+];
+
+export function redactText(value: string): string {
+    let out = value;
+    for (const [pattern, replacement] of TEXT_PATTERNS) {
+        out =
+            typeof replacement === "string"
+                ? out.replace(pattern, replacement)
+                : out.replace(pattern, replacement);
+    }
+    return out;
+}
+
+/**
+  * Keys allowed under `extra` and breadcrumb data, at any depth. Everything
+  * else is replaced, not only secret-looking keys: an `extra.note` holding a
+  * contract clause has no telltale name, and the console bridge copies whole
+  * logged objects into `extra.arguments`. The list is the ids and error
+  * fields this codebase actually attaches; extend it deliberately.
+  */
+const EXTRA_KEY_ALLOWLIST = new Set([
+    "arguments",
+    "body",
+    "code",
+    "dedupe_key",
+    "detail",
+    "document_id",
+    "documentId",
+    "err",
+    "error",
+    "error_stack",
+    "exit_code",
+    "file_id",
+    "fileId",
+    "id",
+    "job_id",
+    "jobId",
+    "kind",
+    "message",
+    "name",
+    "path",
+    "request_id",
+    "requestId",
+    "review_id",
+    "reviewId",
+    "row_id",
+    "rowId",
+    "session_id",
+    "sessionId",
+    "stack",
+    "stage",
+    "status",
+    "statusCode",
+    "tool",
+    "tool_call_id",
+    "unhandledPromiseRejection",
+    "url",
+    "version_id",
+    "versionId",
+    "worker_id",
+    "workerId",
+]);
+
+/** A string leaf: bare paths under URL-shaped keys get redactUrl as well. */
+function redactLeaf(key: string, value: string): string {
+    return redactText(URL_KEY_PATTERN.test(key) ? redactUrl(value) : value);
+}
+
+/** Free-form application data (extra, breadcrumb data): allowlist + text. */
+export function scrubFreeform(value: unknown, depth = 0): unknown {
+    if (depth > MAX_SCRUB_DEPTH) return "[Truncated]";
+    if (typeof value === "string") return redactText(value);
+    if (Array.isArray(value)) {
+        return value.map((item) => scrubFreeform(item, depth + 1));
+    }
+    if (value && typeof value === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value as object)) {
+            out[key] =
+                EXTRA_KEY_ALLOWLIST.has(key) && !SENSITIVE_KEY_PATTERN.test(key)
+                    ? typeof entry === "string"
+                        ? redactLeaf(key, entry)
+                        : scrubFreeform(entry, depth + 1)
+                    : "[Filtered]";
+        }
+        return out;
+    }
+    return value;
+}
+
+/** SDK-shaped data (contexts: os, runtime, device…): denylist + text. */
+export function redactShaped(value: unknown, depth = 0): unknown {
+    if (depth > MAX_SCRUB_DEPTH) return "[Truncated]";
+    if (typeof value === "string") return redactText(value);
+    if (Array.isArray(value)) {
+        return value.map((item) => redactShaped(item, depth + 1));
+    }
+    if (value && typeof value === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value as object)) {
+            out[key] = SENSITIVE_KEY_PATTERN.test(key)
+                ? "[Filtered]"
+                : typeof entry === "string"
+                    ? redactLeaf(key, entry)
+                    : redactShaped(entry, depth + 1);
+        }
+        return out;
+    }
+    return value;
+}
+// END shared-redaction
+
 /** The pieces of a Sentry event this module reads or rewrites. */
 // No index signatures: the SDKs' `ErrorEvent` is an interface, and an
 // interface is not assignable to an indexable type, so the shape below must
@@ -140,7 +273,7 @@ export type ScrubbableEvent = {
     user?: { id?: string | number };
     extra?: Record<string, unknown>;
     contexts?: Record<string, unknown>;
-    breadcrumbs?: { data?: Record<string, unknown> }[];
+    breadcrumbs?: { message?: string; data?: Record<string, unknown> }[];
 };
 
 export type ScrubHint = {
@@ -179,24 +312,8 @@ function findNested(
     return null;
 }
 
-export function redactSensitiveValues(value: unknown, depth = 0): unknown {
-    if (depth > MAX_DEPTH) return "[Truncated]";
-    if (Array.isArray(value)) {
-        return value.map((item) => redactSensitiveValues(item, depth + 1));
-    }
-    if (value && typeof value === "object") {
-        const out: Record<string, unknown> = {};
-        for (const [key, entry] of Object.entries(value as object)) {
-            out[key] = SENSITIVE_KEY_PATTERN.test(key)
-                ? "[Filtered]"
-                : URL_KEY_PATTERN.test(key) && typeof entry === "string"
-                  ? redactUrl(entry)
-                  : redactSensitiveValues(entry, depth + 1);
-        }
-        return out;
-    }
-    return value;
-}
+/** Kept for callers and tests: SDK-shaped redaction. */
+export const redactSensitiveValues = redactShaped;
 
 const DEFAULT_MAX_EVENTS_PER_ISSUE_PER_MINUTE = 10;
 const THROTTLE_WINDOW_MS = 60_000;
@@ -297,6 +414,16 @@ export function createEventScrubber(options?: {
             }
         }
 
+        // The title and the exception text are free text from libraries
+        // that quote emails, tokens, and URLs; key filtering cannot see them.
+        if (typeof event.message === "string") {
+            event.message = redactText(event.message);
+        }
+        for (const value of event.exception?.values ?? []) {
+            if (typeof value.value === "string") {
+                value.value = redactText(value.value);
+            }
+        }
         if (event.request) {
             delete event.request.data;
             delete event.request.cookies;
@@ -321,29 +448,24 @@ export function createEventScrubber(options?: {
             event.user = event.user.id ? { id: event.user.id } : undefined;
         }
         if (event.extra) {
-            event.extra = redactSensitiveValues(event.extra) as Record<
-                string,
-                unknown
-            >;
+            event.extra = scrubFreeform(event.extra) as Record<string, unknown>;
         }
         if (event.contexts) {
-            event.contexts = redactSensitiveValues(event.contexts) as Record<
+            event.contexts = redactShaped(event.contexts) as Record<
                 string,
                 unknown
             >;
         }
         if (event.breadcrumbs) {
-            event.breadcrumbs = event.breadcrumbs.map((crumb) =>
-                crumb.data
-                    ? {
-                          ...crumb,
-                          data: redactSensitiveValues(crumb.data) as Record<
-                              string,
-                              unknown
-                          >,
-                      }
-                    : crumb,
-            );
+            event.breadcrumbs = event.breadcrumbs.map((crumb) => ({
+                ...crumb,
+                ...(typeof crumb.message === "string"
+                    ? { message: redactText(crumb.message) }
+                    : {}),
+                ...(crumb.data
+                    ? { data: scrubFreeform(crumb.data) as Record<string, unknown> }
+                    : {}),
+            }));
         }
         if (!withinBudget(event)) return null;
         return event;
