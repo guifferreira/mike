@@ -219,6 +219,11 @@ app.use(
     credentials: true,
     allowedHeaders: ["Authorization", "Content-Type"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    // The request id is the correlation key between a user report, the
+    // access log, and the Sentry event. Browsers hide response headers from
+    // cross-origin scripts unless they are listed here, so a dev build or a
+    // self-hoster serving the API from another origin could not read it.
+    exposedHeaders: ["X-Request-ID"],
   }),
 );
 
