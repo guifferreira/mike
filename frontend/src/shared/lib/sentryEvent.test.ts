@@ -365,3 +365,27 @@ describe("value-level redaction (due-diligence findings)", () => {
         expect(redactText("plain message with nothing in it")).toBe("plain message with nothing in it");
     });
 });
+
+describe("automatic captures of an already-reported error", () => {
+    it("drops the global handler's copy (handled: false) but keeps the explicit capture", () => {
+        const { markReported, scrubEvent } = createEventScrubber();
+        const failure = new Error("API 502");
+        markReported(failure);
+
+        const unhandled = {
+            exception: {
+                values: [{ mechanism: { type: "onunhandledrejection", handled: false } }],
+            },
+        };
+        expect(scrubEvent(unhandled, { originalException: failure })).toBeNull();
+        expect(
+            scrubEvent(
+                { exception: { values: [{ mechanism: { type: "generic", handled: true } }] } },
+                { originalException: failure },
+            ),
+        ).not.toBeNull();
+        expect(
+            scrubEvent(unhandled, { originalException: new Error("other") }),
+        ).not.toBeNull();
+    });
+});

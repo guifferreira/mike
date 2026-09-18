@@ -397,10 +397,17 @@ export function useWordAssistantChat({
                   await new Promise((resolve) => setTimeout(resolve, 1500));
                   continue;
                 }
-                reportError(error, {
-                  tags: { component: "word-chat", stage: "tool-result" },
-                  extra: { tool_call_id: call.toolCallId, tool: call.name },
-                });
+                // A cancel mid-delivery aborts the fetch: that is the user
+                // stopping the turn, not a failure to report.
+                const cancelled =
+                  controller.signal.aborted ||
+                  (error instanceof Error && error.name === "AbortError");
+                if (!cancelled) {
+                  reportError(error, {
+                    tags: { component: "word-chat", stage: "tool-result" },
+                    extra: { tool_call_id: call.toolCallId, tool: call.name },
+                  });
+                }
                 console.error("Failed to post Word tool result", error);
                 return;
               }

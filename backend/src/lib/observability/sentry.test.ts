@@ -682,3 +682,37 @@ describe("value-level redaction (due-diligence findings)", () => {
     expect(redactText("plain message with nothing in it")).toBe("plain message with nothing in it");
   });
 });
+
+describe("automatic captures of an already-reported error", () => {
+  it("drops the unhandled-rejection handler's copy but keeps the explicit capture", () => {
+    const failure = new Error("upstream 503");
+    reportError(failure, { tags: { component: "http" } });
+
+    const unhandledCopy = {
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value: "upstream 503",
+            mechanism: { type: "auto.node.onunhandledrejection", handled: false },
+          },
+        ],
+      },
+    } as unknown as Sentry.ErrorEvent;
+    expect(scrubEvent(unhandledCopy, { originalException: failure })).toBeNull();
+
+    const explicitCopy = {
+      exception: {
+        values: [
+          { type: "Error", value: "upstream 503", mechanism: { type: "generic", handled: true } },
+        ],
+      },
+    } as unknown as Sentry.ErrorEvent;
+    expect(scrubEvent(explicitCopy, { originalException: failure })).not.toBeNull();
+
+    const unrelated = new Error("never reported");
+    expect(
+      scrubEvent(unhandledCopy, { originalException: unrelated }),
+    ).not.toBeNull();
+  });
+});
