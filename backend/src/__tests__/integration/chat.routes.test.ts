@@ -568,7 +568,7 @@ describe("POST /chat — streaming endpoint", () => {
         // succeed until they change the key, so the engine's verdict that this
         // failure is safe to show has to survive onto the wire.
         const { AssistantStreamError } = await import(
-            "../../modules/chat/engine/index"
+            "../../modules/chat/engine/index.js"
         );
         const message =
             "Your Anthropic (Claude) API key was rejected. Check the key in Settings \u2192 Bring Your Own Keys and try again.";
@@ -601,7 +601,7 @@ describe("POST /chat — streaming endpoint", () => {
         // Only errors the engine marked safe may reach the user; anything else
         // still collapses to the generic message with no actionable code.
         const { AssistantStreamError } = await import(
-            "../../modules/chat/engine/index"
+            "../../modules/chat/engine/index.js"
         );
         runLLMStream.mockImplementation(async () => {
             throw new AssistantStreamError(

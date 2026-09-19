@@ -34,10 +34,10 @@ describe("orderTextItemLines", () => {
     // The regression this exists for: a quote reading across a table row has
     // to come back contiguous, or the viewer's substring search cannot find it.
     const items: TextItemGeometry[] = [
-      { x: 72, y: 700, h: 12 }, // "Name"
-      { x: 72, y: 680, h: 12 }, // "Alice"
-      { x: 300, y: 700, h: 12 }, // "Amount"
-      { x: 300, y: 680, h: 12 }, // "$100"
+      { x: 72, y: 700, w: 40, h: 12 }, // "Name"
+      { x: 72, y: 680, w: 40, h: 12 }, // "Alice"
+      { x: 300, y: 700, w: 50, h: 12 }, // "Amount"
+      { x: 300, y: 680, w: 40, h: 12 }, // "$100"
     ];
 
     expect(orderTextItemLines(items).flat()).toEqual([0, 2, 1, 3]);

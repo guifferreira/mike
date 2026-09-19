@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { CellUpdate } from "../../lib/queue/runProgress";
+import type { RunProgressUpdate } from "../../lib/queue/runProgress";
 
 vi.mock("../../lib/supabase", () => ({
     createServerSupabase: vi.fn(),
@@ -594,7 +594,7 @@ describe("markExtractionFailed", () => {
         // Typed with publishCellUpdate's signature: this case reads the
         // published update back off mock.calls, which needs a real arg tuple.
         const publish =
-            vi.fn<(reviewId: string, update: CellUpdate) => Promise<void>>(
+            vi.fn<(reviewId: string, update: RunProgressUpdate) => Promise<void>>(
                 async () => {},
             );
         const db = makeDb({
@@ -639,7 +639,10 @@ describe("markExtractionFailed", () => {
             generation_id: "gen-1",
         });
         expect(publish).toHaveBeenCalledTimes(1);
-        expect(publish.mock.calls[0][1].column_index).toBe(1);
+        expect(publish).toHaveBeenCalledWith(
+            "rev-1",
+            expect.objectContaining({ type: "cell_update", column_index: 1 }),
+        );
     });
 
     it("still finalizes an unstamped cell when the job carries no generation", async () => {
