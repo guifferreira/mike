@@ -35,6 +35,7 @@ import {
 } from "../extractionWorker";
 import type { Job } from "bullmq";
 import type { ExtractionJobData } from "../../lib/queue/extractionQueue";
+import { AssistantStreamError } from "../../modules/chat/chat.service";
 
 type Call = {
     table: string;
@@ -804,6 +805,44 @@ describe("generation lease", () => {
         expect(db.rpcs.map((r) => r.name)).not.toContain(
             "finish_tabular_review_generation",
         );
+    });
+
+    it("publishes a rejected-key error for the generation stream", async () => {
+        const publish = vi.fn(async () => {});
+        const db = makeDb({
+            tabular_reviews: {
+                select: {
+                    data: { columns_config: COLUMNS, model: "claude-test" },
+                },
+            },
+            tabular_cells: {
+                select: { data: [] },
+            },
+        });
+        queryTabularAllColumns.mockRejectedValue(
+            new AssistantStreamError("rejected", "", [
+                {
+                    type: "error",
+                    message: "The Anthropic API key was rejected.",
+                    safe_to_display: true,
+                    code: "invalid_api_key",
+                },
+            ]),
+        );
+
+        await expect(
+            runExtractionJob(
+                { ...DATA, generationId: "gen-1" },
+                { db: db as never, publish },
+            ),
+        ).rejects.toThrow(/incomplete extraction/);
+
+        expect(publish).toHaveBeenCalledWith("rev-1", {
+            type: "error",
+            message: "The Anthropic API key was rejected.",
+            safe_to_display: true,
+            code: "invalid_api_key",
+        });
     });
 
     it("takes no lease action when the job carries no generation id", async () => {

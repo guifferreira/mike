@@ -483,6 +483,7 @@ tabularRouter.post("/:reviewId/generate", requireAuth, asyncRoute(async (req, re
             return;
         }
 
+        let sentGenerationError = false;
         const completed = await streamTabularGenerateSync({
             res,
             db,
@@ -494,6 +495,15 @@ tabularRouter.post("/:reviewId/generate", requireAuth, asyncRoute(async (req, re
             apiKeys: api_keys,
             generationId,
             abortSignal: generationAbort.signal,
+            onError: (error) => {
+                if (sentGenerationError) return;
+                const payload = assistantStreamErrorPayload(error);
+                if (payload.code !== "invalid_api_key") return;
+                sentGenerationError = true;
+                write(
+                    `data: ${JSON.stringify({ type: "error", ...payload })}\n\n`,
+                );
+            },
         });
 
         if (completed) {
