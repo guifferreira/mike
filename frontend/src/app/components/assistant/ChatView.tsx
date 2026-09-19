@@ -71,10 +71,12 @@ interface Props {
     ) => Promise<string | null>;
     cancel: () => void;
     /**
-     * Model whose provider rejected the caller's API key on the last send.
+     * Set when a provider rejected the caller's API key on the last send.
      * Surfaces the fix-your-key popup; retrying is pointless until it changes.
+     * `model` may be null (an ask-inputs response carries none), which only
+     * costs the provider's name in the message.
      */
-    invalidApiKeyModel?: string | null;
+    rejectedApiKey?: { model: string | null } | null;
     onDismissInvalidApiKey?: () => void;
     /**
      * Whether the caller may write in this chat. The server serves the
@@ -119,7 +121,7 @@ export function ChatView({
     isResponseLoading,
     handleChat,
     cancel,
-    invalidApiKeyModel = null,
+    rejectedApiKey = null,
     onDismissInvalidApiKey,
     canSend,
     accessResolved = true,
@@ -128,8 +130,11 @@ export function ChatView({
     const router = useRouter();
     // The model is what we asked for, so it identifies whose key was rejected.
     const rejectedKeyProvider = useMemo(
-        () => (invalidApiKeyModel ? getModelProvider(invalidApiKeyModel) : null),
-        [invalidApiKeyModel],
+        () =>
+            rejectedApiKey?.model
+                ? getModelProvider(rejectedApiKey.model)
+                : null,
+        [rejectedApiKey],
     );
     const [tabs, setTabs] = useState<AssistantSidePanelTab[]>([]);
     const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -1104,14 +1109,14 @@ export function ChatView({
             />
 
             <ApiKeyMissingPopup
-                open={invalidApiKeyModel !== null}
+                open={rejectedApiKey !== null}
                 provider={rejectedKeyProvider}
                 title="API key rejected"
                 message={`${
                     rejectedKeyProvider
-                        ? `Your ${providerLabel(rejectedKeyProvider)} API key`
+                        ? `The ${providerLabel(rejectedKeyProvider)} API key`
                         : "That API key"
-                } was rejected. Check it in Settings and try again.`}
+                } was rejected. If it is your own key, check it in Settings; otherwise contact your administrator.`}
                 onClose={() => onDismissInvalidApiKey?.()}
             />
             <WarningPopup

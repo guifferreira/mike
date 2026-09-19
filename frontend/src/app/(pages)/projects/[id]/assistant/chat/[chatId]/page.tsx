@@ -394,7 +394,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     );
     const {
         messages,
-        invalidApiKeyModel,
+        rejectedApiKey,
         dismissInvalidApiKey,
         isResponseLoading,
         handleChat,
@@ -408,8 +408,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         projectId,
     });
     // The model is what we asked for, so it identifies whose key was rejected.
-    const rejectedKeyProvider = invalidApiKeyModel
-        ? getModelProvider(invalidApiKeyModel)
+    const rejectedKeyProvider = rejectedApiKey?.model
+        ? getModelProvider(rejectedApiKey.model)
         : null;
     const availableProjectChats = useMemo(() => {
         const byId = new Map<string, Chat>();
@@ -2029,14 +2029,14 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                 />
             )}
             <ApiKeyMissingPopup
-                open={invalidApiKeyModel !== null}
+                open={rejectedApiKey !== null}
                 provider={rejectedKeyProvider}
                 title="API key rejected"
                 message={`${
                     rejectedKeyProvider
-                        ? `Your ${providerLabel(rejectedKeyProvider)} API key`
+                        ? `The ${providerLabel(rejectedKeyProvider)} API key`
                         : "That API key"
-                } was rejected. Check it in Settings and try again.`}
+                } was rejected. If it is your own key, check it in Settings; otherwise contact your administrator.`}
                 onClose={dismissInvalidApiKey}
             />
             <WarningPopup

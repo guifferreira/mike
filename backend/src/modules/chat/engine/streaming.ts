@@ -53,7 +53,7 @@ import { verifyCitations } from "./verifyCitations";
 import { buildMemoryTurn } from "../../../lib/memory/prompt";
 
 export type { AssistantEvent } from "@mike/contracts";
-import type { AssistantEvent } from "@mike/contracts";
+import type { AssistantEvent, AssistantErrorCode } from "@mike/contracts";
 
 /**
  * Tools the model can call that execute outside this process — in the Word
@@ -84,6 +84,37 @@ export class AssistantStreamError extends Error {
 export const ASSISTANT_ERROR_MESSAGE =
   "The response could not be completed. Please try again.";
 const TOOL_ERROR_MESSAGE = "This tool could not complete its request.";
+
+/**
+ * What to tell the client about a failed stream.
+ *
+ * The engine already decided whether a failure is safe to show (a rejected API
+ * key, an unavailable model) and tagged it on the error event. Every streaming
+ * route has to forward that verdict rather than flattening to "try again",
+ * which sends the user to retry something that cannot succeed — so the choice
+ * lives here once instead of in each route's catch.
+ */
+export function assistantStreamErrorPayload(error: unknown): {
+  message: string;
+  safe_to_display?: true;
+  code?: AssistantErrorCode;
+} {
+  const safe =
+    error instanceof AssistantStreamError
+      ? [...error.events]
+          .reverse()
+          .find(
+            (event): event is Extract<AssistantEvent, { type: "error" }> =>
+              event.type === "error" && event.safe_to_display === true,
+          )
+      : undefined;
+  if (!safe) return { message: ASSISTANT_ERROR_MESSAGE };
+  return {
+    message: safe.message,
+    safe_to_display: true,
+    ...(safe.code ? { code: safe.code } : {}),
+  };
+}
 
 function sanitizeAssistantEvent(event: AssistantEvent): AssistantEvent {
   if (event.type === "error") {

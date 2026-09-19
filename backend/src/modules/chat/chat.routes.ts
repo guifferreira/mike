@@ -16,6 +16,7 @@ import { enqueueChatTurnAudit } from "../../lib/audit";
 import {
     appendAssistantEventsToMessage,
     AssistantStreamError,
+    assistantStreamErrorPayload,
     ASSISTANT_ERROR_MESSAGE,
     buildCancelledAssistantMessage,
     extractCitations,
@@ -792,28 +793,8 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 return;
             }
             console.error("[chat/stream] error:", err);
-            // The engine already decided whether this failure is safe to show
-            // (an invalid API key, an unavailable model). Forward that verdict
-            // instead of flattening every failure to "try again", which sends
-            // the user to retry something that cannot succeed.
-            const safeError =
-                err instanceof AssistantStreamError
-                    ? [...err.events]
-                          .reverse()
-                          .find(
-                              (event) =>
-                                  event.type === "error" &&
-                                  event.safe_to_display === true,
-                          )
-                    : undefined;
-            const message =
-                safeError && safeError.type === "error"
-                    ? safeError.message
-                    : ASSISTANT_ERROR_MESSAGE;
-            const errorCode =
-                safeError && safeError.type === "error"
-                    ? safeError.code
-                    : undefined;
+            const errorPayload = assistantStreamErrorPayload(err);
+            const message = errorPayload.message;
             const errorEvents =
                 err instanceof AssistantStreamError
                     ? stripTransientAssistantEvents(err.events)
@@ -850,9 +831,7 @@ chatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
                 write(
                     `data: ${JSON.stringify({
                         type: "error",
-                        message,
-                        ...(safeError ? { safe_to_display: true } : {}),
-                        ...(errorCode ? { code: errorCode } : {}),
+                        ...errorPayload,
                     })}\n\n`,
                 );
                 write("data: [DONE]\n\n");

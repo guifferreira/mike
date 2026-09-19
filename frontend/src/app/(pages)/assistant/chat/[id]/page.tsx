@@ -24,7 +24,7 @@ export default function AssistantChatPage() {
         handleChat,
         setMessages,
         cancel,
-        invalidApiKeyModel,
+        rejectedApiKey,
         dismissInvalidApiKey,
     } = useAssistantChat({ initialMessages, chatId: id });
 
@@ -108,7 +108,7 @@ export default function AssistantChatPage() {
             chatModel={chatModel}
             chatReasoningLevel={chatReasoningLevel}
             messages={messages}
-            invalidApiKeyModel={invalidApiKeyModel}
+            rejectedApiKey={rejectedApiKey}
             onDismissInvalidApiKey={dismissInvalidApiKey}
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}

@@ -363,8 +363,11 @@ export async function streamAiSdk(
           params.callbacks?.onToolCallStart?.(call);
           break;
         }
+        // A tool's own failure is not the model provider's: a search tool
+        // answering 401 says nothing about our LLM key, so this path keeps the
+        // plain message rather than blaming the user's credentials.
         case "tool-error":
-          throw streamFailure(part.error, config.label);
+          throw new Error(errorMessage(part.error, config.label));
         case "error":
           throw streamFailure(part.error, config.label);
         case "abort": {

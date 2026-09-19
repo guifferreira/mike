@@ -360,7 +360,7 @@ describe("rejected API key", () => {
                     isResponseLoading={false}
                     handleChat={vi.fn().mockResolvedValue("chat-1")}
                     cancel={vi.fn()}
-                    invalidApiKeyModel={model}
+                    rejectedApiKey={{ model }}
                     onDismissInvalidApiKey={onDismiss}
                 />
             </PageChromeContext.Provider>,
@@ -376,7 +376,7 @@ describe("rejected API key", () => {
         const alert = screen.getByRole("alert");
         expect(within(alert).getByText("API key rejected")).toBeInTheDocument();
         expect(alert).toHaveTextContent(
-            /Your Anthropic \(Claude\) API key was rejected/,
+            /The Anthropic \(Claude\) API key was rejected/,
         );
         expect(
             within(alert).getByRole("button", { name: "Go to settings" }),
@@ -391,8 +391,33 @@ describe("rejected API key", () => {
         );
     });
 
-    it("stays hidden while no key has been rejected", () => {
+    it("still warns when the send carried no model", () => {
+        // An ask-inputs response submits without a model, so the popup cannot
+        // depend on having one — it just loses the provider's name.
         renderWithRejectedKey(null);
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+            /That API key was rejected/,
+        );
+    });
+
+    it("stays hidden while no key has been rejected", () => {
+        render(
+            <PageChromeContext.Provider
+                value={{ mobileActionsContainer: null }}
+            >
+                <ChatView
+                    chatId="chat-1"
+                    chat={activeChat}
+                    messages={[]}
+                    isResponseLoading={false}
+                    handleChat={vi.fn().mockResolvedValue("chat-1")}
+                    cancel={vi.fn()}
+                    rejectedApiKey={null}
+                    onDismissInvalidApiKey={vi.fn()}
+                />
+            </PageChromeContext.Provider>,
+        );
 
         expect(screen.queryByText("API key rejected")).not.toBeInTheDocument();
     });

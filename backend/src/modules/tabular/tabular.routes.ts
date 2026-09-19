@@ -20,6 +20,7 @@ import { sendInternalError } from "../../lib/httpError";
 import { sendServiceFailure } from "../../lib/serviceResult";
 import {
     AssistantStreamError,
+    assistantStreamErrorPayload,
     ASSISTANT_ERROR_MESSAGE,
     buildCancelledAssistantMessage,
     isAbortError,
@@ -848,7 +849,8 @@ tabularRouter.post("/:reviewId/chat", requireAuth, asyncRoute(async (req, res) =
             return;
         }
         console.error("[tabular/chat] error", err);
-        const message = ASSISTANT_ERROR_MESSAGE;
+        const errorPayload = assistantStreamErrorPayload(err);
+        const message = errorPayload.message;
         const errorEvents =
             err instanceof AssistantStreamError
                 ? stripTransientAssistantEvents(err.events)
@@ -879,7 +881,9 @@ tabularRouter.post("/:reviewId/chat", requireAuth, asyncRoute(async (req, res) =
             }
         }
         try {
-            write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
+            write(
+                `data: ${JSON.stringify({ type: "error", ...errorPayload })}\n\n`,
+            );
             write("data: [DONE]\n\n");
         } catch {
             /* ignore */

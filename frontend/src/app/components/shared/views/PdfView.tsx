@@ -121,28 +121,44 @@ async function collectTextItemGeometry(
 ): Promise<CollectedTextItem[]> {
     const collected: CollectedTextItem[] = [];
     const reader = stream.getReader();
-    for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        for (const item of value?.items ?? []) {
-            // TextLayer creates one span per item carrying a `str`, and skips
-            // marked-content boundaries, which carry none.
-            if (item.str === undefined) continue;
-            const transform = Array.isArray(item.transform) ? item.transform : [];
-            const scaleY = typeof transform[3] === "number" ? transform[3] : 0;
-            collected.push({
-                str: item.str,
-                geometry: {
-                    x: typeof transform[4] === "number" ? transform[4] : 0,
-                    y: typeof transform[5] === "number" ? transform[5] : 0,
-                    w: typeof item.width === "number" ? item.width : 0,
-                    h:
-                        Math.abs(scaleY) ||
-                        (typeof item.height === "number" ? item.height : 0) ||
-                        10,
-                },
-            });
+    try {
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            for (const item of value?.items ?? []) {
+                // TextLayer creates one span per item carrying a `str`, and
+                // skips marked-content boundaries, which carry none.
+                if (item.str === undefined) continue;
+                const transform = Array.isArray(item.transform)
+                    ? item.transform
+                    : [];
+                const scaleY =
+                    typeof transform[3] === "number" ? transform[3] : 0;
+                collected.push({
+                    str: item.str,
+                    geometry: {
+                        x: typeof transform[4] === "number" ? transform[4] : 0,
+                        y: typeof transform[5] === "number" ? transform[5] : 0,
+                        w: typeof item.width === "number" ? item.width : 0,
+                        h:
+                            Math.abs(scaleY) ||
+                            (typeof item.height === "number"
+                                ? item.height
+                                : 0) ||
+                            10,
+                    },
+                });
+            }
         }
+    } catch (error) {
+        // Zooming or navigating mid-render cancels the stream. Returning what
+        // was collected lets computeReadingOrder see the length mismatch and
+        // fall back to drawing order. Rejecting instead would surface as an
+        // unhandled rejection, because a stale render returns before the
+        // caller ever awaits this promise.
+        console.warn("PDF text geometry read did not complete", error);
+    } finally {
+        reader.releaseLock();
     }
     return collected;
 }

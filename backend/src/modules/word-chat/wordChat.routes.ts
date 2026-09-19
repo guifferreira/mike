@@ -16,6 +16,7 @@ import { asyncRoute, routerErrorHandler } from "../../middleware/asyncRoute";
 import { createServerSupabase } from "../../lib/supabase";
 import {
   AssistantStreamError,
+  assistantStreamErrorPayload,
   ASSISTANT_ERROR_MESSAGE,
   buildCancelledAssistantMessage,
   extractCitations,
@@ -799,7 +800,8 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       return;
     }
     console.error("[word-chat] stream error", error);
-    const message = ASSISTANT_ERROR_MESSAGE;
+    const errorPayload = assistantStreamErrorPayload(error);
+    const message = errorPayload.message;
     const errorEvents =
       error instanceof AssistantStreamError
         ? stripTransientAssistantEvents(error.events)
@@ -820,7 +822,9 @@ wordChatRouter.post("/", requireAuth, asyncRoute(async (req, res) => {
       console.error("[word-chat] failed to persist stream error", saveError);
     }
     try {
-      write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
+      write(
+        `data: ${JSON.stringify({ type: "error", ...errorPayload })}\n\n`,
+      );
       write("data: [DONE]\n\n");
     } catch {
       // The client disconnected while the error was being handled.
