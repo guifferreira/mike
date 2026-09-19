@@ -6,6 +6,7 @@ import {
 } from "../../../lib/llm";
 import { resolveRequestedModel } from "../../../lib/routerModels";
 import { UserFacingError } from "../../../lib/userFacingError";
+import { InvalidApiKeyError } from "../../../lib/llm/apiKeyErrors";
 import type { Db } from "../../../lib/supabase";
 import { buildUserMcpTools, type McpToolEvent } from "../../../lib/mcpConnectors";
 import type { SourceDocument } from "../../../lib/sourceDocuments";
@@ -682,6 +683,11 @@ export async function runLLMStream(params: {
         type: "error",
         message,
         ...(safeToDisplay ? { safe_to_display: true } : {}),
+        // A rejected key is worth naming: the client turns this into a prompt
+        // to go fix the key rather than a suggestion to retry.
+        ...(err instanceof InvalidApiKeyError
+          ? { code: "invalid_api_key" as const }
+          : {}),
       });
       throw new AssistantStreamError(
         message,

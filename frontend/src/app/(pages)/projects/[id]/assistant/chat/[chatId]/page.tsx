@@ -72,6 +72,11 @@ import { ProjectPickerModal } from "@/app/components/modals/ProjectPickerModal";
 import { DocumentUploadMenu } from "@/app/components/shared/DocumentUploadMenu";
 import { ConfirmPopup } from "@/app/components/popups/ConfirmPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
+import { ApiKeyMissingPopup } from "@/app/components/popups/ApiKeyMissingPopup";
+import {
+    getModelProvider,
+    providerLabel,
+} from "@/app/lib/modelAvailability";
 import { PermissionDeniedPopup } from "@/app/components/popups/PermissionDeniedPopup";
 import { MikeIcon } from "@/app/components/chat/mike-icon";
 import { useAuth } from "@/app/contexts/AuthContext";
@@ -389,6 +394,8 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     );
     const {
         messages,
+        invalidApiKeyModel,
+        dismissInvalidApiKey,
         isResponseLoading,
         handleChat,
         setMessages,
@@ -400,6 +407,10 @@ export default function ProjectAssistantChatPage({ params }: Props) {
         chatId: activeChatId || undefined,
         projectId,
     });
+    // The model is what we asked for, so it identifies whose key was rejected.
+    const rejectedKeyProvider = invalidApiKeyModel
+        ? getModelProvider(invalidApiKeyModel)
+        : null;
     const availableProjectChats = useMemo(() => {
         const byId = new Map<string, Chat>();
         for (const chat of chats ?? []) {
@@ -2017,6 +2028,17 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                     uploadStateId={`project-chat:${projectId}`}
                 />
             )}
+            <ApiKeyMissingPopup
+                open={invalidApiKeyModel !== null}
+                provider={rejectedKeyProvider}
+                title="API key rejected"
+                message={`${
+                    rejectedKeyProvider
+                        ? `Your ${providerLabel(rejectedKeyProvider)} API key`
+                        : "That API key"
+                } was rejected. Check it in Settings and try again.`}
+                onClose={dismissInvalidApiKey}
+            />
             <WarningPopup
                 open={!!projectPicker.error}
                 onClose={projectPicker.clearError}

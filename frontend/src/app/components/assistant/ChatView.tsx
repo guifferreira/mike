@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useRef, useEffect } from "react";
+import { useCallback, useMemo, useState, useRef, useEffect } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import { ArrowDown, Pencil, Plus, Trash2, Users } from "lucide-react";
@@ -44,6 +44,11 @@ import { HeaderButtonUI, HeaderButtonsUI } from "@/shared/ui/HeaderButtonsUI";
 import { HeaderActionsMenu } from "@/app/components/shared/HeaderActionsMenu";
 import { PermissionDeniedPopup } from "@/app/components/popups/PermissionDeniedPopup";
 import { WarningPopup } from "@/app/components/popups/WarningPopup";
+import { ApiKeyMissingPopup } from "@/app/components/popups/ApiKeyMissingPopup";
+import {
+    getModelProvider,
+    providerLabel,
+} from "@/app/lib/modelAvailability";
 import { can, roleFrom } from "@/app/lib/permissions";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 
@@ -65,6 +70,12 @@ interface Props {
         },
     ) => Promise<string | null>;
     cancel: () => void;
+    /**
+     * Model whose provider rejected the caller's API key on the last send.
+     * Surfaces the fix-your-key popup; retrying is pointless until it changes.
+     */
+    invalidApiKeyModel?: string | null;
+    onDismissInvalidApiKey?: () => void;
     /**
      * Whether the caller may write in this chat. The server serves the
      * standing on GET /chat/:id; surfaces that know it must pass it, so a
@@ -108,11 +119,18 @@ export function ChatView({
     isResponseLoading,
     handleChat,
     cancel,
+    invalidApiKeyModel = null,
+    onDismissInvalidApiKey,
     canSend,
     accessResolved = true,
     onInitialSubmit,
 }: Props) {
     const router = useRouter();
+    // The model is what we asked for, so it identifies whose key was rejected.
+    const rejectedKeyProvider = useMemo(
+        () => (invalidApiKeyModel ? getModelProvider(invalidApiKeyModel) : null),
+        [invalidApiKeyModel],
+    );
     const [tabs, setTabs] = useState<AssistantSidePanelTab[]>([]);
     const [activeTabId, setActiveTabId] = useState<string | null>(null);
     const [panelMounted, setPanelMounted] = useState(false);
@@ -531,6 +549,30 @@ export function ChatView({
         },
         [patchTab],
     );
+
+    /**
+     * Dismisses a tab's citation quote or tracked change, leaving the document
+     * open. This drops the tab to a plain document view rather than hiding the
+     * section inside the panel: reopening the same citation upserts an
+     * identical tab, which by design produces no prop change, so a panel-local
+     * dismissal would leave the user unable to get the quote back.
+     */
+    const handleCloseAnnotation = useCallback((tabId: string) => {
+        setTabs((prev) => {
+            const index = prev.findIndex((tab) => tab.id === tabId);
+            if (index < 0 || prev[index].kind === "document") return prev;
+            const { id, document, warning, initialScrollTop } = prev[index];
+            const next = prev.slice();
+            next[index] = {
+                kind: "document",
+                id,
+                document,
+                warning,
+                initialScrollTop,
+            };
+            return next;
+        });
+    }, []);
 
     const handleScrollChange = useCallback(
         (tabId: string, scrollTop: number) => {
@@ -1061,6 +1103,17 @@ export function ChatView({
                 onClose={() => setActionGate(null)}
             />
 
+            <ApiKeyMissingPopup
+                open={invalidApiKeyModel !== null}
+                provider={rejectedKeyProvider}
+                title="API key rejected"
+                message={`${
+                    rejectedKeyProvider
+                        ? `Your ${providerLabel(rejectedKeyProvider)} API key`
+                        : "That API key"
+                } was rejected. Check it in Settings and try again.`}
+                onClose={() => onDismissInvalidApiKey?.()}
+            />
             <WarningPopup
                 open={!!actionError}
                 title={actionError?.title ?? "Chat action failed"}
@@ -1089,6 +1142,7 @@ export function ChatView({
                         onEditResolved={handleEditResolved}
                         onEditError={handleEditError}
                         onWarningDismiss={handleWarningDismiss}
+                        onCloseAnnotation={handleCloseAnnotation}
                         onScrollChange={handleScrollChange}
                     />
                 </div>

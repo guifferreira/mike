@@ -88,6 +88,9 @@ export function useAssistantChat({
 
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [isResponseLoading, setIsResponseLoading] = useState(false);
+  const [invalidApiKeyModel, setInvalidApiKeyModel] = useState<
+    string | null
+  >(null);
   const [isLoadingCitations, setIsLoadingCitations] = useState(false);
   const [chatId, setChatId] = useState<string | undefined>(initialChatId);
 
@@ -490,6 +493,12 @@ export function useAssistantChat({
                 data.message,
                 safeToDisplay,
               );
+              // A rejected key cannot be fixed by retrying, so raise it as a
+              // signal the surface can turn into "go fix your key" rather than
+              // leaving it as one more line of failed-response text.
+              if (data.code === "invalid_api_key") {
+                setInvalidApiKeyModel(model ?? null);
+              }
               clearStreamingPlaceholders();
               finalizeStreamingContent();
               finalizeStreamingReasoning();
@@ -499,6 +508,9 @@ export function useAssistantChat({
                   type: "error",
                   message,
                   ...(safeToDisplay ? { safe_to_display: true } : {}),
+                  ...(data.code === "invalid_api_key"
+                    ? { code: "invalid_api_key" as const }
+                    : {}),
                 },
               ];
               const snapshot = [...eventsRef.current];
@@ -1419,6 +1431,12 @@ export function useAssistantChat({
 
   return {
     messages,
+    /**
+     * Model whose provider rejected our API key on the last send, or null.
+     * Retrying cannot help, so surfaces use this to point at Settings.
+     */
+    invalidApiKeyModel,
+    dismissInvalidApiKey: () => setInvalidApiKeyModel(null),
     isResponseLoading,
     setIsResponseLoading,
     isLoadingCitations,
