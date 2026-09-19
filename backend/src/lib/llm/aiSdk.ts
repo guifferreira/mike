@@ -11,6 +11,7 @@ import type {
   StreamChatResult,
 } from "./types";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
+import { asInvalidApiKeyError } from "./apiKeyErrors";
 
 const MAX_OUTPUT_TOKENS = 16_384;
 
@@ -245,6 +246,19 @@ function errorMessage(error: unknown, label: string): string {
   return `${label} stream failed.`;
 }
 
+/**
+ * Convert a provider failure into the error we throw.
+ *
+ * A rejected API key becomes an `InvalidApiKeyError` so the user is told to
+ * fix their key rather than to "try again". Classification has to happen here,
+ * before the error is flattened into a plain `Error`: the status code and
+ * response body that identify it live on the AI SDK's `APICallError` and do
+ * not survive that conversion.
+ */
+function streamFailure(error: unknown, label: string): Error {
+  return asInvalidApiKeyError(error, label) ?? new Error(errorMessage(error, label));
+}
+
 function usesCourtlistenerTool(
   steps: Array<{ toolCalls: Array<{ toolName: string }> }>,
 ) {
@@ -255,12 +269,52 @@ function usesCourtlistenerTool(
   );
 }
 
+/**
+ * Provider-specific hints that let a multi-turn conversation reuse the
+ * already-processed prompt prefix instead of paying for it on every turn.
+ *
+ * OpenAI caches automatically but routes by `prompt_cache_key`; sending the
+ * conversation id keeps consecutive turns on the same cache. Anthropic only
+ * caches up to an explicit breakpoint, so the last message gets one: it
+ * covers the system prompt, tool definitions, and every earlier turn, and
+ * the next request hits that prefix as long as it is byte-identical.
+ * Providers ignore namespaces they do not own, so both hints are sent.
+ */
+type StreamTextProviderOptions = NonNullable<
+  Parameters<typeof AiSdk.streamText>[0]["providerOptions"]
+>;
+
+export function withPrefixCacheHints(params: StreamChatParams): {
+  messages: AiSdk.ModelMessage[];
+  providerOptions?: StreamTextProviderOptions;
+} {
+  if (!params.conversationId || !params.messages.length) {
+    return { messages: params.messages };
+  }
+  const last = params.messages.length - 1;
+  const breakpoint = {
+    anthropic: { cacheControl: { type: "ephemeral" } },
+  };
+  return {
+    messages: params.messages.map((message, index): AiSdk.ModelMessage => {
+      if (index !== last) return message;
+      return message.role === "assistant"
+        ? { role: "assistant", content: message.content, providerOptions: breakpoint }
+        : { role: "user", content: message.content, providerOptions: breakpoint };
+    }),
+    providerOptions: {
+      openai: { promptCacheKey: params.conversationId },
+    },
+  };
+}
+
 export async function streamAiSdk(
   params: StreamChatParams,
   config: AiSdkAdapterConfig,
 ): Promise<StreamChatResult> {
   const sdk = await import("ai");
   const tools = toAiSdkTools(params.tools ?? [], params.runTools, sdk);
+  const cacheHints = withPrefixCacheHints(params);
   const rawStreamRecorder = createRawLlmStreamRecorder({
     provider: config.provider,
     model: config.modelId,
@@ -273,7 +327,10 @@ export async function streamAiSdk(
     const result = sdk.streamText({
       model: config.model,
       system: params.systemPrompt,
-      messages: params.messages,
+      messages: cacheHints.messages,
+      ...(cacheHints.providerOptions
+        ? { providerOptions: cacheHints.providerOptions }
+        : {}),
       tools,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       stopWhen: sdk.stepCountIs(params.maxIterations ?? 10),
@@ -349,10 +406,13 @@ export async function streamAiSdk(
           params.callbacks?.onToolCallStart?.(call);
           break;
         }
+        // A tool's own failure is not the model provider's: a search tool
+        // answering 401 says nothing about our LLM key, so this path keeps the
+        // plain message rather than blaming the user's credentials.
         case "tool-error":
           throw new Error(errorMessage(part.error, config.label));
         case "error":
-          throw new Error(errorMessage(part.error, config.label));
+          throw streamFailure(part.error, config.label);
         case "abort": {
           const error = new Error(part.reason || "Stream aborted.");
           error.name = "AbortError";
@@ -369,7 +429,9 @@ export async function streamAiSdk(
     return { fullText };
   } catch (error) {
     await rawStreamRecorder?.flush("error", error);
-    throw error;
+    // Some providers reject the key before the stream opens, so the failure
+    // arrives as a throw from the SDK rather than as an "error" stream part.
+    throw asInvalidApiKeyError(error, config.label) ?? error;
   }
 }
 

@@ -70,6 +70,7 @@ import { useUserProfile } from "@/app/contexts/UserProfileContext";
 import {
     getModelProvider,
     isModelAvailable,
+    providerLabel,
     type ModelProvider,
 } from "@/app/lib/modelAvailability";
 import { TRSidePanel } from "./TRSidePanel";
@@ -170,8 +171,10 @@ export function TRView({ reviewId, projectId }: Props) {
         colIdx: number;
         rowIdx: number;
     } | null>(null);
-    const [apiKeyModalProvider, setApiKeyModalProvider] =
-        useState<ModelProvider | null>(null);
+    const [apiKeyWarning, setApiKeyWarning] = useState<{
+        kind: "missing" | "rejected";
+        provider: ModelProvider | null;
+    } | null>(null);
     const [noModelsWarning, setNoModelsWarning] =
         useState<NoModelsReason | null>(null);
     const [modelRequiredWarning, setModelRequiredWarning] = useState(false);
@@ -485,7 +488,10 @@ export function TRView({ reviewId, projectId }: Props) {
             apiKeys &&
             !isModelAvailable(tabularModel, apiKeys, configuredModelIds)
         ) {
-            setApiKeyModalProvider(getModelProvider(tabularModel));
+            setApiKeyWarning({
+                kind: "missing",
+                provider: getModelProvider(tabularModel),
+            });
             return;
         }
 
@@ -587,6 +593,16 @@ export function TRView({ reviewId, projectId }: Props) {
                                 : c,
                         ),
                     );
+                } else if (
+                    data.type === "error" &&
+                    data.code === "invalid_api_key"
+                ) {
+                    setApiKeyWarning({
+                        kind: "rejected",
+                        provider: tabularModel
+                            ? getModelProvider(tabularModel)
+                            : null,
+                    });
                 }
             } catch (err) {
                 console.warn(
@@ -656,7 +672,10 @@ export function TRView({ reviewId, projectId }: Props) {
             apiKeys &&
             !isModelAvailable(tabularModel, apiKeys, configuredModelIds)
         ) {
-            setApiKeyModalProvider(getModelProvider(tabularModel));
+            setApiKeyWarning({
+                kind: "missing",
+                provider: getModelProvider(tabularModel),
+            });
             return;
         }
 
@@ -691,7 +710,9 @@ export function TRView({ reviewId, projectId }: Props) {
                         ? (payload.provider as ModelProvider)
                         : getModelProvider(tabularModel);
                 if (payload?.code === "missing_api_key" && provider) {
-                    setApiKeyModalProvider(provider);
+                    setApiKeyWarning({ kind: "missing", provider });
+                } else if (payload?.code === "invalid_api_key") {
+                    setApiKeyWarning({ kind: "rejected", provider });
                 }
                 throw new Error(
                     payload?.detail ?? `Generation failed: ${response.status}`,
@@ -1903,9 +1924,19 @@ export function TRView({ reviewId, projectId }: Props) {
             />
 
             <ApiKeyMissingPopup
-                open={apiKeyModalProvider !== null}
-                provider={apiKeyModalProvider}
-                onClose={() => setApiKeyModalProvider(null)}
+                open={apiKeyWarning !== null}
+                provider={apiKeyWarning?.provider ?? null}
+                title={
+                    apiKeyWarning?.kind === "rejected"
+                        ? "API key rejected"
+                        : undefined
+                }
+                message={
+                    apiKeyWarning?.kind === "rejected"
+                        ? `The ${apiKeyWarning.provider ? providerLabel(apiKeyWarning.provider) : "model provider"} API key was rejected. If you added your own key, check it in Settings → Bring Your Own Keys; otherwise contact your administrator.`
+                        : undefined
+                }
+                onClose={() => setApiKeyWarning(null)}
             />
 
             <NoModelsWarningPopup

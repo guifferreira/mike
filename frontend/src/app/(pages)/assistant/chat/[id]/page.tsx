@@ -18,8 +18,15 @@ export default function AssistantChatPage() {
         useChatHistoryContext();
 
     const initialMessages = newChatMessages ?? [];
-    const { messages, isResponseLoading, handleChat, setMessages, cancel } =
-        useAssistantChat({ initialMessages, chatId: id });
+    const {
+        messages,
+        isResponseLoading,
+        handleChat,
+        setMessages,
+        cancel,
+        rejectedApiKey,
+        dismissInvalidApiKey,
+    } = useAssistantChat({ initialMessages, chatId: id });
 
     const hasAutoSent = useRef(false);
     const hasLoaded = useRef(false);
@@ -108,6 +115,8 @@ export default function AssistantChatPage() {
             chatModel={chatModel}
             chatReasoningLevel={chatReasoningLevel}
             messages={messages}
+            rejectedApiKey={rejectedApiKey}
+            onDismissInvalidApiKey={dismissInvalidApiKey}
             isResponseLoading={isResponseLoading}
             handleChat={handleChat}
             cancel={cancel}
