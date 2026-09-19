@@ -247,7 +247,13 @@ describe("TRChatPanel header", () => {
         );
         const user = userEvent.setup();
 
-        render(<TRChatPanel reviewId="review-1" onCitationClick={vi.fn()} />);
+        const { container } = render(
+            <TRChatPanel reviewId="review-1" onCitationClick={vi.fn()} />,
+        );
+        const viewport = container.querySelector<HTMLDivElement>(
+            ".tr-chat-message-fades",
+        )!;
+        viewport.scrollTo = vi.fn();
         await user.click(
             screen.getByRole("button", { name: "Send test message" }),
         );
