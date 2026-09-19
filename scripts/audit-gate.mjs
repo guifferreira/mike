@@ -129,7 +129,7 @@ async function loadNpmReport() {
     // Only strip the canary back out if it was not already part of this
     // workspace's tree. When it IS a real dependency its advisories are a
     // real finding and must survive.
-    const canaryIsReal = Object.hasOwn(batch, CANARY_PACKAGE);
+    const canaryIsReal = (batch[CANARY_PACKAGE] ?? []).includes(CANARY_VERSION);
     batch[CANARY_PACKAGE] = [
       ...new Set([...(batch[CANARY_PACKAGE] ?? []), CANARY_VERSION]),
     ];

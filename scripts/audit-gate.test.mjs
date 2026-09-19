@@ -172,10 +172,9 @@ test("sends the canary in every npm batch and keeps it out of the findings", asy
     );
 });
 
-test("keeps the canary's advisory when the workspace really depends on it", async () => {
+test("keeps the canary's advisory when the workspace really depends on the vulnerable version", async () => {
     // Stripping unconditionally would blind the gate to the one package it
-    // uses as its probe — and word-addin genuinely ships adm-zip in its dev
-    // tree, which is why it has an allowlist entry.
+    // uses as its probe. A real vulnerable copy must still fail the gate.
     requests.length = 0;
     respond = (url) => {
         if (url === NPM_BULK_PATH)
@@ -191,9 +190,32 @@ test("keeps the canary's advisory when the workspace really depends on it", asyn
         },
     });
 
+    notStrictEqual(result.status, 0, `expected a failure\n${result.stderr}`);
+    strictEqual(
+        result.stderr.includes("GHSA-xcpc-8h2w-3j85"),
+        true,
+    );
+});
+
+test("strips the injected canary when the workspace has only a patched version", async () => {
+    requests.length = 0;
+    respond = (url) => {
+        if (url === NPM_BULK_PATH)
+            return { status: 200, body: { "adm-zip": [CANARY_ADVISORY] } };
+        return { status: 200, body: {} };
+    };
+
+    const result = await runGate({
+        lockfileVersion: 3,
+        packages: {
+            "": { name: "fixture", version: "1.0.0" },
+            "node_modules/adm-zip": { version: "0.6.1" },
+        },
+    });
+
     strictEqual(result.status, 0, `expected a pass\n${result.stderr}`);
     strictEqual(
-        result.stdout.includes("ALLOWLISTED high: GHSA-xcpc-8h2w-3j85"),
+        result.stdout.includes("audit gate passed (0 high/critical advisories"),
         true,
     );
 });
