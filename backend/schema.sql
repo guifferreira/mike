@@ -1820,8 +1820,8 @@ create index if not exists idx_chats_user
 create index if not exists chats_user_created_idx
   on public.chats(user_id, created_at desc, id);
 
-create index if not exists chats_user_updated_idx
-  on public.chats(user_id, updated_at desc, id);
+create index if not exists chats_updated_at_idx
+  on public.chats(updated_at desc, id);
 
 create index if not exists idx_chats_project
   on public.chats(project_id);

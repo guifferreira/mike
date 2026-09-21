@@ -18,11 +18,23 @@ set updated_at = greatest(
 where chat.updated_at is null;
 
 alter table public.chats
+  drop constraint if exists chats_updated_at_not_null_check,
+  add constraint chats_updated_at_not_null_check
+    check (updated_at is not null) not valid;
+
+alter table public.chats
+  validate constraint chats_updated_at_not_null_check;
+
+alter table public.chats
   alter column updated_at set default now(),
   alter column updated_at set not null;
 
-create index if not exists chats_user_updated_idx
-  on public.chats(user_id, updated_at desc, id);
+alter table public.chats
+  drop constraint chats_updated_at_not_null_check;
+
+drop index if exists public.chats_user_updated_idx;
+create index concurrently if not exists chats_updated_at_idx
+  on public.chats(updated_at desc, id);
 
 create or replace function public.set_chat_updated_at()
 returns trigger
