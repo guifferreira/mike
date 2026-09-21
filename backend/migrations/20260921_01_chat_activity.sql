@@ -95,20 +95,31 @@ as $$
     c.created_at,
     c.updated_at,
     p.name as project_name,
+    -- Provenance ("I started this thread"), not a role: the ladder itself is
+    -- lib/permissions.ts, and the creator branch of ensureChatAccess is what
+    -- turns this into Owner standing.
     coalesce(c.user_id::text = p_user_id, false) as is_owner,
+    -- The SAME verdict the predicate below filters on, served to the caller.
+    -- Serving only is_owner was not enough: the client must distinguish
+    -- Editor and Viewer from Owner so its actions match the server verdict.
+    -- One evaluation, one truth: the lateral computes the role once and both
+    -- the column and the WHERE read it.
     verdict.role as access_role
   from public.chats c
   left join public.projects p on p.id = c.project_id
   cross join lateral (
     select public.chat_access_role(
-      c.id,
-      c.user_id,
-      c.project_id,
-      c.org_id,
-      p_user_id,
-      p_user_email
-    ) as role
+             c.id,
+             c.user_id,
+             c.project_id,
+             c.org_id,
+             p_user_id,
+             p_user_email
+           ) as role
   ) verdict
+  -- The whole predicate, in one call.
+  -- The join above is for project_name only; the function resolves the
+  -- project itself.
   where verdict.role is not null
     and (
       p_before_updated_at is null
