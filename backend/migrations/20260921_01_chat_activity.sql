@@ -32,7 +32,7 @@ alter table public.chats
 alter table public.chats
   drop constraint chats_updated_at_not_null_check;
 
-drop index if exists public.chats_user_updated_idx;
+drop index concurrently if exists public.chats_user_updated_idx;
 create index concurrently if not exists chats_updated_at_idx
   on public.chats(updated_at desc, id);
 
