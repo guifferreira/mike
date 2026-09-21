@@ -15,10 +15,13 @@ describe("useAssistantHistoryStatuses", () => {
                 }),
             { initialProps: { activeChatId: "chat-1" as string | null } },
         );
-        const turn = beginAssistantTurn("chat-1", {
-            userMessage: { role: "user", content: "Question" },
-            assistant: { role: "assistant", content: "" },
-            cancel: vi.fn(),
+        let turn!: ReturnType<typeof beginAssistantTurn>;
+        act(() => {
+            turn = beginAssistantTurn("chat-1", {
+                userMessage: { role: "user", content: "Question" },
+                assistant: { role: "assistant", content: "" },
+                cancel: vi.fn(),
+            });
         });
 
         await waitFor(() =>
@@ -35,6 +38,5 @@ describe("useAssistantHistoryStatuses", () => {
         await waitFor(() =>
             expect(result.current.statuses["chat-1"]).toBeUndefined(),
         );
-
     });
 });
