@@ -1810,7 +1810,8 @@ create table if not exists public.chats (
   org_id uuid references public.organizations(id) on delete restrict,
   constraint chats_org_requires_project
     check (org_id is null or project_id is not null),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_chats_user
@@ -1818,6 +1819,9 @@ create index if not exists idx_chats_user
 
 create index if not exists chats_user_created_idx
   on public.chats(user_id, created_at desc, id);
+
+create index if not exists chats_user_updated_idx
+  on public.chats(user_id, updated_at desc, id);
 
 create index if not exists idx_chats_project
   on public.chats(project_id);
@@ -1878,7 +1882,9 @@ create or replace function public.get_chats_overview(
   p_user_id text,
   p_user_email text,
   p_limit integer default null,
-  p_offset integer default 0
+  p_offset integer default 0,
+  p_before_updated_at timestamptz default null,
+  p_before_id uuid default null
 )
 returns table (
   id uuid,
@@ -1887,12 +1893,14 @@ returns table (
   title text,
   model text,
   created_at timestamptz,
+  updated_at timestamptz,
   project_name text,
   is_owner boolean,
   access_role text
 )
 language sql
 stable
+set search_path = public
 as $$
   select
     c.id,
@@ -1901,6 +1909,7 @@ as $$
     c.title,
     c.model,
     c.created_at,
+    c.updated_at,
     p.name as project_name,
     -- Provenance ("I started this thread"), not a role: the ladder itself is
     -- lib/permissions.ts, and the creator branch of ensureChatAccess is what
@@ -1928,7 +1937,12 @@ as $$
   -- The join above is for project_name only; the function resolves the
   -- project itself.
   where verdict.role is not null
-  order by c.created_at desc, c.id asc
+    and (
+      p_before_updated_at is null
+      or c.updated_at < p_before_updated_at
+      or (c.updated_at = p_before_updated_at and c.id > p_before_id)
+    )
+  order by c.updated_at desc, c.id asc
   limit case
     when p_limit is null then null
     else greatest(1, least(p_limit, 100))
@@ -1955,6 +1969,42 @@ create index if not exists chat_messages_chat_created_id_idx
   on public.chat_messages(chat_id, created_at, id);
 create index if not exists chat_messages_author_idx
   on public.chat_messages(author_user_id) where author_user_id is not null;
+
+create or replace function public.set_chat_updated_at()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists chats_set_updated_at on public.chats;
+create trigger chats_set_updated_at
+before update of title, model, reasoning_level on public.chats
+for each row execute function public.set_chat_updated_at();
+
+create or replace function public.touch_chat_from_message()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  update public.chats
+  set updated_at = now()
+  where id = new.chat_id;
+  return new;
+end;
+$$;
+
+drop trigger if exists chat_messages_touch_chat on public.chat_messages;
+create trigger chat_messages_touch_chat
+after insert or update of content, files, workflow, citations
+on public.chat_messages
+for each row execute function public.touch_chat_from_message();
 
 -- Append continuation events to one durable assistant row. The row lock keeps
 -- citations and events from overwriting one another when requests overlap.
