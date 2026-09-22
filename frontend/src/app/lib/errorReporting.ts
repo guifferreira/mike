@@ -6,6 +6,7 @@
  */
 
 import * as Sentry from "@sentry/nextjs";
+import { privacyBoundaryIntegration } from "@/shared/lib/sentryPrivacy";
 import {
     MIKE_SENTRY_DSN,
     createEventScrubber,
@@ -174,7 +175,7 @@ export function browserSentryOptions(env: {
         // Session replay is deliberately NOT enabled: it would record
         // privileged document text on screen.
         sendDefaultPii: false,
-        integrations: [Sentry.captureConsoleIntegration({ levels: ["error"] })],
+        integrations: [privacyBoundaryIntegration(), Sentry.captureConsoleIntegration({ levels: ["error"] })],
         initialScope: {
             tags: {
                 service: "mike-frontend",
@@ -200,6 +201,7 @@ export function serverSentryOptions(
         dsn: dsn || undefined,
         enabled: dsn.length > 0,
         environment: env.SENTRY_ENVIRONMENT?.trim() || "self-hosted",
+        integrations: [privacyBoundaryIntegration()],
         release: releaseName(env.SENTRY_RELEASE, env.GIT_SHA),
         tracesSampleRate: parseSampleRate(env.SENTRY_TRACES_SAMPLE_RATE, 0),
         sendDefaultPii: false,

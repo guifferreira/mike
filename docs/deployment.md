@@ -202,15 +202,16 @@ key restores the global key as the fallback.
 ### Error tracking
 
 Error reports are sent to the Mike project's own Sentry by default, so the
-maintainers can fix what forks and self-hosted installs run into. Reports
-exclude request bodies, raw console payloads, cookies, and credential headers;
-common credential and email patterns are redacted. Community reports also
-remove user/machine identity, URL origins, breadcrumbs, device and locale
-details, and absolute filesystem paths. Diagnostic code locations, routes,
-ids, OS/runtime versions, environment, and release remain. Scrubbing happens
-in-process, but arbitrary legal text inside an error message cannot be
-recognized automatically: keep error messages and logging labels free of
-user content. See the observability guide for the policy and limitations.
+maintainers can fix failures encountered by forks and self-hosted installs.
+Before network transmission, every runtime rebuilds reports from an explicit
+allowlist: code locations and line numbers, controlled operation labels,
+HTTP method/status and normalized routes, validated correlation IDs, release,
+and environment. Client document filenames, document text, raw error and
+console messages, request URLs/queries/headers/bodies, user identities, and
+breadcrumbs are excluded. Automatic sessions, replay, attachments, traces,
+and other non-error payloads are blocked. The same boundary applies to
+community and official installations. See the [observability guide](observability.md)
+for the exact policy, source-map behavior, and limitations.
 To opt out, set `SENTRY_DISABLED=true`
 (`NEXT_PUBLIC_SENTRY_DISABLED=true` / `REACT_APP_SENTRY_DISABLED=true` for the
 browser and add-in builds); to use your own Sentry instead, set the matching

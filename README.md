@@ -59,16 +59,16 @@ authentication behavior, Ollama setup, and first-run guidance.
 ### Telemetry
 
 Error reports are sent to the Mike project's own Sentry by default, so the
-maintainers can fix what forks and self-hosted installs run into. Reports
-exclude request bodies, raw console payloads, cookies, and credential headers;
-common credential and email patterns are redacted. Community reports also
-remove user/machine identity, URL origins, breadcrumbs, device and locale
-details, and absolute filesystem paths. Diagnostic code locations, routes,
-ids, OS/runtime versions, environment, and release remain. Scrubbing happens
-in-process, but arbitrary legal text inside an error message cannot be
-recognized automatically: keep error messages and logging labels free of
-user content. See the [observability guide](docs/observability.md) for the
-policy and limitations.
+maintainers can fix failures encountered by forks and self-hosted installs.
+Before network transmission, every runtime rebuilds reports from an explicit
+allowlist: code locations and line numbers, controlled operation labels,
+HTTP method/status and normalized routes, validated correlation IDs, release,
+and environment. Client document filenames, document text, raw error and
+console messages, request URLs/queries/headers/bodies, user identities, and
+breadcrumbs are excluded. Automatic sessions, replay, attachments, traces,
+and other non-error payloads are blocked. The same boundary applies to
+community and official installations. See the [observability guide](docs/observability.md)
+for the exact policy, source-map behavior, and limitations.
 To opt out, set `SENTRY_DISABLED=true`
 (`NEXT_PUBLIC_SENTRY_DISABLED=true` / `REACT_APP_SENTRY_DISABLED=true` for the
 browser and add-in builds); to use your own Sentry instead, set the matching
@@ -80,11 +80,10 @@ accessible to authorized Sentry organization members. The guide documents
 (Zulip Desktop, Element Web, and GitLab's distinct Service Ping mechanism),
 and [quota protections and remaining limits](docs/observability.md#quota-protection-and-its-limits).
 
-The [Sentry data audit](docs/sentry-data-audit.md) lists actual outgoing fields
-and unresolved privacy gaps. SDK session-health messages are separate from
-error reports and can include a signed-in user ID; the error scrubber does
-not cover them. Ordinary URL query values and arbitrary error text can also
-survive filtering. Session health is diagnostic metadata, not screen recording.
+The [Sentry data audit](docs/sentry-data-audit.md) records the original privacy
+findings, their fixes, and the current outbound data inventory. Source-map
+uploads are separate and send application source code only when operators
+configure upload credentials.
 
 ## Repository
 

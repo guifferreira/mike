@@ -10,6 +10,7 @@
  * reports them.
  */
 import * as Sentry from "@sentry/react";
+import { privacyBoundaryIntegration } from "@mike/sentry-event";
 import {
   MIKE_SENTRY_DSN,
   createEventScrubber,
@@ -66,7 +67,7 @@ export function addinSentryOptions(
     tracesSampleRate: parseSampleRate(env.tracesSampleRate, 0),
     // No session replay: the pane sits next to a privileged document.
     sendDefaultPii: false,
-    integrations: [Sentry.captureConsoleIntegration({ levels: ["error"] })],
+    integrations: [privacyBoundaryIntegration(), Sentry.captureConsoleIntegration({ levels: ["error"] })],
     initialScope: {
       tags: {
         service: "mike-word-addin",

@@ -18,6 +18,7 @@
  */
 
 export const CONSOLE_CAPTURE_MECHANISM = "auto.core.capture_console";
+export { privacyBoundaryIntegration } from "./sentryPrivacy";
 
 // BEGIN shared-redaction
 // This block is the privacy control for every runtime. It is authored once

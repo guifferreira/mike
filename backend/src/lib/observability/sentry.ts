@@ -18,6 +18,7 @@
 //      explicitly are remembered so the bridge does not double-report them.
 
 import * as Sentry from "@sentry/node";
+import { privacyBoundaryIntegration } from "./sentryPrivacy";
 
 export type SentryRole = "api" | "worker" | "worker-thread" | "job";
 
@@ -784,6 +785,7 @@ export function initSentry(
     // Bodies are stripped in beforeSend as well; not collecting them at all
     // means they never sit in memory on the event either.
     integrations: [
+      privacyBoundaryIntegration(),
       Sentry.httpIntegration({ maxIncomingRequestBodySize: "none" }),
       Sentry.captureConsoleIntegration({ levels: ["error"] }),
       // Node 22 crashes on an unhandled rejection; the SDK's default "warn"

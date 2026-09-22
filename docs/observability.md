@@ -12,26 +12,24 @@ Every Mike runtime can report unexpected failures to [Sentry](https://sentry.io)
 | Word add-in (task pane, ribbon commands, OAuth dialog) | `@sentry/react` | `REACT_APP_SENTRY_DSN` at **build** time |
 
 **On by default.** Error reports are sent to the Mike project's own Sentry by default, so the
-maintainers can fix what forks and self-hosted installs run into. Reports
-exclude request bodies, raw console payloads, cookies, and credential headers;
-common credential and email patterns are redacted. Community reports also
-remove user/machine identity, URL origins, breadcrumbs, device and locale
-details, and absolute filesystem paths. Diagnostic code locations, routes,
-ids, OS/runtime versions, environment, and release remain. Scrubbing happens
-in-process, but arbitrary legal text inside an error message cannot be
-recognized automatically: keep error messages and logging labels free of
-user content. See the observability guide for the policy and limitations.
+maintainers can fix failures encountered by forks and self-hosted installs.
+Before network transmission, every runtime rebuilds reports from an explicit
+allowlist: code locations and line numbers, controlled operation labels,
+HTTP method/status and normalized routes, validated correlation IDs, release,
+and environment. Client document filenames, document text, raw error and
+console messages, request URLs/queries/headers/bodies, user identities, and
+breadcrumbs are excluded. Automatic sessions, replay, attachments, traces,
+and other non-error payloads are blocked. The same boundary applies to
+community and official installations. See the [observability guide](observability.md)
+for the exact policy, source-map behavior, and limitations.
 To opt out, set `SENTRY_DISABLED=true`
 (`NEXT_PUBLIC_SENTRY_DISABLED=true` / `REACT_APP_SENTRY_DISABLED=true` for the
 browser and add-in builds); to use your own Sentry instead, set the matching
 `*_SENTRY_DSN`.
 
-**Audit limitation:** the statements above describe error-event scrubbing.
-SDK defaults also send session-health and delivery-statistics envelopes;
-session data can include an authenticated user ID outside the error scrubber.
-Ordinary URL query values and arbitrary error text can also survive filtering.
-Read the [data inventory and unresolved privacy findings](sentry-data-audit.md)
-before relying on this integration's privacy guarantees.
+The [data audit](sentry-data-audit.md) preserves the earlier leak findings and
+records the final transport boundary that closes them. Internal source-code
+filenames identify the failing code; client document filenames are excluded.
 
 Resolution order, per runtime: `*_SENTRY_DISABLED=true` → off;
 `*_SENTRY_DSN` set → that DSN; otherwise the built-in Mike project DSN. Backend test
@@ -76,8 +74,9 @@ cannot stop that sender. The controls below protect different things:
 | Control | Current implementation / verified state | Limit |
 | --- | --- | --- |
 | Per-issue event budget | Backend and shared web/add-in scrubbers allow 10 events per issue key per minute by default. Backend override: `SENTRY_MAX_EVENTS_PER_ISSUE_PER_MINUTE`. | Per process, worker, or client instance; not a shared monthly or fleet-wide budget. Different keys, restarts, and direct submissions bypass it. |
+| Runtime-wide error budget | The final transport permits at most 60 errors per minute per SDK client, across distinct issues. | Does not stop direct submissions to the public DSN or enforce a fleet-wide budget. |
 | Duplicate and expected-error suppression | Explicit reports mark the same error object to prevent a later console/unhandled duplicate. API 4xx and deliberate client cancellations are excluded from the API reporting paths. | New error objects or independent console messages can still produce events. Grouping several events into one issue does not make them one quota unit. |
-| Tracing and replay | Tracing defaults to zero; replay is not installed by this integration. | These save other data categories; they do not cap error ingestion. |
+| Non-error telemetry | The final transport rejects sessions, transactions, spans, logs, replay, attachments and every other non-error item. | Adding a new telemetry category requires an explicit privacy-reviewed policy change. |
 | Sentry spike protection | Enabled on all three Mike projects when checked on 2026-09-22 UTC. | Uses historical volume; Sentry explicitly says it must not be the sole defense. |
 | Inbound filters | The frontend project has browser-extension, crawler, legacy-browser, hydration-error, and chunk-load-error filters enabled; localhost filtering is off (checked on the same date). | Filters can hide genuine bugs too. Custom release/message filters are unavailable on the current plan; no custom IP blocklist was set on the inspected frontend project. |
 | Hard DSN rate limit | The inspected frontend key has no custom limit. Its controls require Business or above, while Mike currently uses Developer with 5,000 errors per month. | The monthly allowance can be exhausted, leaving genuine new errors unrecorded. |
@@ -161,16 +160,14 @@ however many users hit it.
 
 Backend events carry `service=mike-backend` and `role` (`api`, `worker`,
 `worker-thread`, or `job`); explicit reporting paths add `component`.
-Authenticated request scopes attach a user id for official installs;
-community scrubbing removes the user object.
+User identity is removed by the final transport in both installation modes.
 
 **Web app**
 
 - Uncaught exceptions and unhandled promise rejections in the browser (SDK
   default), the route error boundary (`error.tsx`), and the root boundary
   (`global-error.tsx`).
-- Every backend 5xx seen by the API client, as `API <status> on <METHOD>
-  <route>` with the backend's `request_id` — search `request_id:<id>` in Sentry
+- Every backend 5xx seen by the API client, with a controlled title containing component, method, route and status with the backend's `request_id` — search `request_id:<id>` in Sentry
   to see both halves of one failure. 4xx are intentional answers to user input
   and are shown, not reported.
 - Requests that never reached the server (backend down, mid-deploy, network),
@@ -200,44 +197,44 @@ community scrubbing removes the user object.
   bug that only reproduces in Word on Mac 16.x or Word on the web is
   identifiable.
 
-## What never gets reported
+## Outbound privacy boundary
 
-Mike handles privileged legal documents, so the SDKs run with
-`sendDefaultPii: false` and a `beforeSend` hook (`backend/src/lib/observability/sentry.ts`,
-`frontend/src/shared/lib/sentryEvent.ts`) that:
+`sendDefaultPii: false` and the original `beforeSend` scrubber provide defense
+in depth, but neither is the final guarantee: SDK session items bypass
+`beforeSend`. `privacyBoundaryIntegration` wraps the installed SDK transport
+and rebuilds the complete envelope before serialization. It is installed in
+the backend, Next server/edge, browser, and all Word add-in entries.
 
-- removes request bodies and cookies and the `Authorization`, `Cookie`,
-  `Set-Cookie`, and API-key headers (the backend also disables body capture in
-  the HTTP integration, so bodies never sit on an event in memory);
-- reduces the user to their id — the email address is never attached;
-- redacts credentials carried in URLs: the token in `/download/<token>`, the
-  `code` and `state` of an OAuth callback, and the signature fields of a
-  presigned storage URL, wherever a URL appears (request, extras, breadcrumbs);
-- redacts secrets and identities inside free text wherever it appears (the
-  issue title, the exception message, extras, breadcrumbs): bearer tokens,
-  JWTs, provider keys (`sk-…`, `AKIA…`, GitHub and Slack tokens), email
-  addresses, and the query strings of URLs. A Postgres error quoting
-  `Key (email)=(…)` arrives as `Key (email)=([email])`;
-- excludes raw console arguments and body fields, and keeps only an allowlist
-  of keys under `extra` and breadcrumb data (job, document, session, file,
-  review and request ids, error name/message/stack,
-  path/url, status/code). Any other key is replaced with `[Filtered]`,
-  because a field holding document text has no telltale name. Extend the
-  allowlist in the `shared-redaction` block (one block, mirrored in the
-  backend and shared scrubbers; a test fails if the copies differ);
-- applies text/credential scrubbing to tags and grouping fingerprints too;
-  community reports also remove URL origins from these fields, extras, and
-  error text; network failures use a normalized pathname, never a backend host;
-- replaces the value of any secret-looking key (`token`, `secret`,
-  `password`, `api_key`, `authorization`, `cookie`, `credential`, ...) in the
-  SDK's own contexts with `[Filtered]`.
+- Only error `event` items may leave. Sessions (including authenticated `did`),
+  client reports, attachments, replay, traces, logs, metrics and unknown future
+  item types are dropped locally without a network request.
+- Error/console prose is replaced with a description made from approved
+  component, stage, method, normalized route, status, and error-code values.
+  For example: `Failure in upload-worker / conversion`. Native exception
+  classes, relative source-code file paths and line/column numbers remain.
+- Request data, headers, cookies, URLs and queries are absent. Routes retain
+  only fixed endpoint vocabulary; other segments become `:id`.
+- User objects, machine details, breadcrumbs, arbitrary contexts, source
+  snippets, frame locals, function names, custom tags and free-form extras
+  are absent. Correlation/domain IDs are allowed only under named keys and
+  only in UUID format. IDs remain linkable to internal records; this is data
+  minimization, not a claim of anonymity.
+- Controlled Office host/platform/version tags remain. Source-map debug IDs
+  and code-file locations remain so uploaded source maps can resolve frames.
+  Source-map uploads themselves are a separate operator-enabled transfer of
+  application source code.
+- The same restrictions apply to `install=official` and `install=community`.
+  An install label does not enable transmission of client information.
 
-Session replay is not enabled anywhere and should not be: it would record the
-document open next to the pane.
+Do not put customer names in operator-supplied release/environment values.
+Those values identify the deployed software and are sent with reports.
+Performance tracing settings do not bypass the error-only transport boundary;
+tracing is unsupported until a separate outbound policy is reviewed.
 
-Performance tracing is off (`tracesSampleRate` 0) unless you opt in with the
-`*_TRACES_SAMPLE_RATE` variables; error tracking is the point of this
-integration and traces cost quota.
+The boundary is mirrored in `backend/src/lib/observability/sentryPrivacy.ts`
+and `frontend/src/shared/lib/sentryPrivacy.ts`, with a synchronization test.
+When adding diagnostics, extend reviewed enum/ID fields and their tests. Do not
+add free-form text just to restore a more detailed exception message.
 
 ## Configuration
 
@@ -333,14 +330,14 @@ and `NODE_OPTIONS` in the Dockerfile), so backend frames already read
    curl -i http://localhost:3001/observability/sentry-test
    ```
 
-   You get a 500 with a `request_id`; the Sentry issue "Sentry backend test
-   error" carries the same `request_id` tag. Turn the flag off again: the
+   You get a 500 with a `request_id`; the Sentry issue carries the controlled HTTP failure title and the same
+   `request_id` tag. Turn the flag off again: the
    route is unauthenticated and exists only to prove the pipeline.
 3. Web app: open the app, and in the browser console run
    `setTimeout(() => { throw new Error("Sentry web test") })`. The error
    arrives tagged `service=mike-frontend runtime=browser`. To see the
    request-id correlation, stop the backend and click anything that loads
-   data: the browser reports `API 502 on GET /...` and the Next server reports
+   data: the browser reports the normalized route and status 502 and the Next server reports
    the gateway failure.
 4. Word add-in: with the DSN baked in, open the pane and stop the backend; the
    next action reports a transport-failure warning with the Office host tags.
@@ -373,7 +370,7 @@ failed, which release/runtime was running, whether recovery succeeded, and
 which request or job connects the evidence. Preserve the original exception
 and stack; add context rather than replacing it with `new Error("Failed")`.
 
-For example, an API issue titled `API 500 on POST /projects/:projectId/...`
+For example, an API issue with method `POST`, status `500`, and route `/projects/:id/...`
 identifies the user-visible symptom. Its `request_id` links to the backend
 exception and stack, which explain the cause. An Office issue uses `stage`
 and `office_code` to identify the failing Word operation. Retryable job
@@ -396,7 +393,7 @@ For each new reporting path:
 
 Sentry detects failures on instrumented paths; it cannot discover every
 incorrect result or silently swallowed exception. Console capture is a
-fallback, and its static label may need explicit context at the call site.
+fallback; its free-form label is omitted, so add approved component/stage context at the call site.
 The client 5xx fingerprint groups symptoms by endpoint/status, so investigate
 the correlated backend events before assuming one symptom has one cause.
 Throttling, filters, and delivery failures also mean Sentry's event count is
@@ -421,5 +418,5 @@ not an exact count of every failure experienced by users.
   first console argument a static diagnostic label. Raw console arguments
   and `body` fields are excluded; additional positional strings are not used
   in event titles or grouping keys. Attach safe diagnostic ids explicitly.
-  Pattern redaction cannot recognise arbitrary legal text inside an Error
-  message, so upstream error messages still need care at their source.
+  The final transport discards raw error prose rather than guessing which
+  parts are private. Source logs should still avoid privileged information.

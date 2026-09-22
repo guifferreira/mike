@@ -70,11 +70,11 @@ test("a backend 5xx is reported with the route, status, and request id but no bo
     route.fulfill({
       status: 500,
       contentType: "application/json",
-      headers: { "x-request-id": "req-e2e-500" },
+      headers: { "x-request-id": "8f1c2a3e-1234-4bcd-9e0f-1234567890ab" },
       body: JSON.stringify({
         code: "internal_error",
         detail: "Something went wrong. Please try again.",
-        request_id: "req-e2e-500",
+        request_id: "8f1c2a3e-1234-4bcd-9e0f-1234567890ab",
       }),
     }),
   );
@@ -86,7 +86,7 @@ test("a backend 5xx is reported with the route, status, and request id but no bo
   await page.getByRole("menuitem", { name: "Workflows" }).click();
 
   const event = await nextEvent;
-  expect(event.message).toMatch(/^API 500 on GET \/workflows/);
+  expect(event.message).toBe("Failure in mike-api / GET / /workflows / 500 / internal_error");
   expect(event.level).toBe("error");
   expect(tagsOf(event)).toMatchObject({
     service: "mike-word-addin",
@@ -95,10 +95,10 @@ test("a backend 5xx is reported with the route, status, and request id but no bo
     // Tag values keep their JS type in the envelope; Sentry stringifies on
     // ingest.
     http_status: 500,
-    request_id: "req-e2e-500",
+    request_id: "8f1c2a3e-1234-4bcd-9e0f-1234567890ab",
     error_code: "internal_error",
   });
-  // Signed in: the id travels, the email never does.
+  // Signed in: user identity is excluded from every outbound envelope.
   // The e2e bundle is a community install (no REACT_APP_SENTRY_INSTALL), so
   // no user id leaves the machine at all; the request id is the correlation
   // key and it survives.
@@ -164,7 +164,7 @@ test("a mid-stream chat failure is reported once, tagged as word-chat", async ({
   await addin.gotoTaskpane({ documentText: "Clause 1. The parties agree." });
   await addin.expectAuthedShell();
   await addin.mockChatStream(["partial answer"], {
-    errorBefore: "Model provider exploded",
+    errorBefore: "Model provider could not open Synthetic_Client_Jane_Doe_NDA.pdf",
   });
 
   // The harness's fake Word cannot serve the structured document read, so
@@ -188,7 +188,9 @@ test("a mid-stream chat failure is reported once, tagged as word-chat", async ({
     officeEvents.map((candidate) => [tagsOf(candidate).stage, candidate.level]),
   ).toEqual([["document-read", "warning"]]);
   const exception = (event.exception as { values: { value: string }[] }).values[0]!;
-  expect(exception.value).toContain("Model provider exploded");
+  expect(exception.value).toBe("Failure in word-chat");
+  expect(sentry.bodies.join("\n")).not.toContain("Synthetic_Client_Jane_Doe_NDA.pdf");
+  expect(sentry.bodies.join("\n")).not.toContain('"type":"session"');
   // The console.error that accompanies the failure is bridged into Sentry
   // too, but recognised as the same error and dropped: exactly one event.
   await page.waitForTimeout(500);

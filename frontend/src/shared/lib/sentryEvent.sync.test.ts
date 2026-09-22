@@ -28,6 +28,10 @@ function sharedBlock(file: string): string {
 }
 
 describe("shared-redaction block", () => {
+    it("keeps the outbound envelope privacy boundary identical", () => {
+        expect(readFileSync(path.resolve(__dirname, "sentryPrivacy.ts"), "utf8"))
+            .toBe(readFileSync(path.resolve(__dirname, "../../../../backend/src/lib/observability/sentryPrivacy.ts"), "utf8"));
+    });
     it("is identical in the backend and the shared scrubber", () => {
         expect(sharedBlock(BACKEND)).toBe(sharedBlock(SHARED));
     });

@@ -1,8 +1,45 @@
 # Sentry data audit
 
+## Current policy after the audit fixes
+
+The final transport boundary now applies the same explicit allowlist in all
+runtimes and both installation modes. Only error events are transmitted.
+Automatic sessions (including user IDs), client reports, replay, attachments,
+traces, logs, metrics and unknown envelope types are dropped locally.
+
+Error values and console labels are replaced with controlled diagnostic
+descriptions. Request URLs, query strings, all headers, bodies, user objects,
+breadcrumbs, arbitrary context, free-form extras, function names, local
+variables and source snippets are omitted. Source-code paths/line numbers,
+source-map debug IDs, approved operation tags, UUID correlation/domain IDs,
+release/environment and severity remain. Client document names have no
+permitted outbound field. Domain IDs remain linkable to internal records.
+
+The real Node SDK was exercised against a local capture server in community
+and official modes: filename and authenticated-user canaries were absent,
+only error items were sent, and request correlation survived. Tests also
+cover space-containing, extensionless and Unicode private names, unknown
+SDK fields, mixed envelopes, and the 60-event/minute runtime-wide limit.
+
+These changes intentionally reduce diagnostic prose: a raw provider or
+database error may quote privileged content. Use the retained source location,
+operation, status/code and request ID to investigate. Source-map uploads
+remain a separate opt-in transfer of build artifacts. Operator release and
+environment names must not contain customer information.
+
+See [the outbound policy](observability.md#outbound-privacy-boundary) and
+[quota limits](observability.md#quota-protection-and-its-limits). Public DSNs
+remain susceptible to direct abuse; local budgets are not an ingest firewall.
+
+## Historical audit: before the final transport boundary
+
+The remainder preserves the original findings for traceability. It describes
+the earlier commit, not the current outbound payload.
+
+
 Audit date: 2026-09-22 UTC. Audited PR #450 code at `36ef6450` (same runtime
 implementation as `abf21c8d`, which produced the captured live envelopes).
-SDK version: 10.73.0. This records current behavior and unresolved gaps; it
+SDK version: 10.73.0. This records the earlier behavior and then-unresolved gaps; it
 does not certify that no sensitive information can leave the application.
 
 ## Scope and conclusion
