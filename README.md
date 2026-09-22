@@ -67,11 +67,18 @@ details, and absolute filesystem paths. Diagnostic code locations, routes,
 ids, OS/runtime versions, environment, and release remain. Scrubbing happens
 in-process, but arbitrary legal text inside an error message cannot be
 recognized automatically: keep error messages and logging labels free of
-user content. See the observability guide for the policy and limitations.
+user content. See the [observability guide](docs/observability.md) for the
+policy and limitations.
 To opt out, set `SENTRY_DISABLED=true`
 (`NEXT_PUBLIC_SENTRY_DISABLED=true` / `REACT_APP_SENTRY_DISABLED=true` for the
 browser and add-in builds); to use your own Sentry instead, set the matching
 `*_SENTRY_DSN`.
+
+The built-in DSNs are public submission addresses; stored error reports are
+accessible to authorized Sentry organization members. The guide documents
+[public-DSN and default-on precedents](docs/observability.md#public-dsns-and-default-on-reporting)
+(Zulip Desktop, Element Web, and GitLab's distinct Service Ping mechanism),
+and [quota protections and remaining limits](docs/observability.md#quota-protection-and-its-limits).
 
 ## Repository
 

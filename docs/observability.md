@@ -37,14 +37,82 @@ community are separable in Sentry. The boot log says which applies:
 `[sentry] enabled for api → Mike project Sentry (community install). Opt out
 with SENTRY_DISABLED=true or point SENTRY_DSN at your own project.`
 
-### The DSN is public by design
+### Public DSNs and default-on reporting
 
-A DSN only lets an SDK *post* events; reading them needs a login to the Sentry
-organisation. Anyone can copy it from this repository or a browser bundle and
-post junk, so the `mike-xp` organisation runs with spike protection on,
-"prevent storing of IP addresses" on for every project, and inbound filters
-available per project (block by IP, message, or release). If a key is ever
-abused, rotate it under the project's Client Keys and ship the new constant.
+**Public DSN does not mean public error reports.** A DSN lets an SDK submit
+events; it does not grant access to read stored events or administer the
+Sentry organization. Mike's default reports go to the maintainers' `mike-xp`
+organization. The source-map upload token (`SENTRY_AUTH_TOKEN`) is a separate,
+privileged secret and must never appear in source or browser bundles. See
+[Sentry's explanation of public DSNs](https://www.sentry.help/en/articles/13964341-my-dsn-key-is-publicly-visible-is-this-a-security-vulnerability).
+
+There are established precedents, but publishing a DSN and choosing default-on
+telemetry are separate decisions. These are applications, not a claim that
+installing their underlying libraries automatically reports to their authors:
+
+| Project | What its own source or documentation establishes |
+| --- | --- |
+| [Zulip Desktop](https://github.com/zulip/zulip-desktop/blob/1cc112def5cd4b0b3ffe15c0857258c527b4421a/app/main/sentry.ts) (Apache-2.0) | Publishes a Sentry DSN. Packaged builds report unless the user disables `errorReporting`; development builds are excluded. |
+| [Element Web](https://github.com/element-hq/element-web/blob/5fc4f4090cea4357bf101e051e9864cde7610145/apps/web/element.io/develop/config.json) (AGPL/GPL options) | Publishes a Sentry DSN in its develop deployment configuration. Its [integration](https://github.com/element-hq/element-web/blob/5fc4f4090cea4357bf101e051e9864cde7610145/apps/web/src/sentry.ts) explicitly submits bug reports; this is not evidence of Mike's same automatic reporting policy. |
+| [GitLab Service Ping](https://docs.gitlab.com/development/internal_analytics/service_ping/) | Documents default-on telemetry sending a weekly usage payload to GitLab. This is a precedent for default-on usage reporting, not proof of default-on Sentry crash reporting from self-managed instances. GitLab's [Sentry setup](https://docs.gitlab.com/omnibus/settings/configuration/#error-reporting-and-logging-with-sentry) asks administrators to enable it and supply their own DSNs. |
+
+Mike's policy remains explicit: automatic error reporting is on by default,
+with the exclusions above, an opt-out, and an alternative destination under
+the operator's control. Other projects' choices do not imply identical data
+collection, privacy guarantees, or consent policies.
+
+### Quota protection and its limits
+
+Anyone can copy a public DSN and submit junk directly. Local SDK filtering
+cannot stop that sender. The controls below protect different things:
+
+| Control | Current implementation / verified state | Limit |
+| --- | --- | --- |
+| Per-issue event budget | Backend and shared web/add-in scrubbers allow 10 events per issue key per minute by default. Backend override: `SENTRY_MAX_EVENTS_PER_ISSUE_PER_MINUTE`. | Per process, worker, or client instance; not a shared monthly or fleet-wide budget. Different keys, restarts, and direct submissions bypass it. |
+| Duplicate and expected-error suppression | Explicit reports mark the same error object to prevent a later console/unhandled duplicate. API 4xx and deliberate client cancellations are excluded from the API reporting paths. | New error objects or independent console messages can still produce events. Grouping several events into one issue does not make them one quota unit. |
+| Tracing and replay | Tracing defaults to zero; replay is not installed by this integration. | These save other data categories; they do not cap error ingestion. |
+| Sentry spike protection | Enabled on all three Mike projects when checked on 2026-09-22 UTC. | Uses historical volume; Sentry explicitly says it must not be the sole defense. |
+| Inbound filters | The frontend project has browser-extension, crawler, legacy-browser, hydration-error, and chunk-load-error filters enabled; localhost filtering is off (checked on the same date). | Filters can hide genuine bugs too. Custom release/message filters are unavailable on the current plan; no custom IP blocklist was set on the inspected frontend project. |
+| Hard DSN rate limit | The inspected frontend key has no custom limit. Its controls require Business or above, while Mike currently uses Developer with 5,000 errors per month. | The monthly allowance can be exhausted, leaving genuine new errors unrecorded. |
+| Official/community isolation | Separate backend, frontend, and add-in projects; official and community events currently share each runtime's default key/project. | `install=official` is a client-supplied tag, not authentication or a reserved quota. |
+
+These are a dated account audit, not settings enforced by the repository.
+Recheck them in Sentry when changing the plan or deploying to another account.
+Preventing IP storage is a privacy control, not quota protection. Likewise,
+the Next.js `/monitoring` tunnel is not an authenticated abuse barrier; the
+public upstream DSN remains usable directly.
+
+For stronger protection, maintainers should:
+
+1. Separate official and community ingestion keys/projects and enforce
+   server-side limits for each where the plan supports them. Separate projects
+   alone still share the organization's allowance. If using spend allocation,
+   understand that it reserves a minimum and can still draw from unallocated
+   capacity; it is not automatically a per-project ceiling.
+2. Keep spike protection on and configure spike/usage notifications to a
+   responsible maintainer. The existing new-issue/regression email alert is
+   not a quota alert; the spike-protection page currently has no project
+   notification actions configured.
+3. Set an explicit pay-as-you-go spending ceiling if upgrading to a paid
+   plan. A cost ceiling prevents overspending, not loss of error visibility
+   when the allowance is consumed. No plan upgrade was made for this audit.
+4. Review accepted, filtered, and dropped events in Stats & Usage. Keep noise
+   filters narrow; specifically review whether dropping hydration and chunk
+   loading failures is appropriate for Mike's supported browsers and deploys.
+5. During abuse, disable the affected key, investigate, then rotate and ship
+   the replacement. Older installs using the revoked key will stop reporting.
+   A replacement public key is discoverable again. Allowed-origin filters can
+   reduce unwanted browser traffic, but are not authentication against a
+   sender that constructs its own requests.
+
+A controlled ingest service could enforce shared budgets before forwarding,
+but that requires an architecture where the upstream credential cannot be
+used to bypass it. It is not implemented by the current tunnel. There is no
+claim that the current public community endpoint is abuse-proof.
+
+References: [Sentry volume controls](https://www.sentry.help/en/articles/13964888-what-are-some-ways-i-can-control-the-event-volume-for-my-organisation),
+[spike-protection limitations](https://www.sentry.help/en/articles/13964833-spike-protection-did-not-work-as-i-would-expect),
+and [spend allocation semantics](https://www.sentry.help/en/articles/13964837-understanding-spend-allocation).
 
 ## What gets reported
 
@@ -81,10 +149,13 @@ however many users hit it.
   grouped by stage. Use `bestEffort(promise, { what })` for the same shape
   elsewhere instead of `.catch(() => {})`.
 - Everything else that reaches `console.error`, via Sentry's console bridge.
-  Errors already reported explicitly are recognised and not sent twice.
+  The same error object already reported explicitly is recognised and not
+  sent twice; unrelated console messages do not share that identity.
 
-Each event is tagged with `service=mike-backend`, `role` (`api`, `worker`,
-`worker-thread`, or `job`), `component`, and, for requests, the user id.
+Backend events carry `service=mike-backend` and `role` (`api`, `worker`,
+`worker-thread`, or `job`); explicit reporting paths add `component`.
+Authenticated request scopes attach a user id for official installs;
+community scrubbing removes the user object.
 
 **Web app**
 
@@ -230,7 +301,7 @@ provide upload credentials at build time; the build then uploads source maps
 and deletes them from the output so they never ship:
 
 ```
-SENTRY_AUTH_TOKEN=...   # an org auth token with project:releases scope
+SENTRY_AUTH_TOKEN=...   # organization token with Source Map Upload permission (org:ci)
 SENTRY_ORG=...
 SENTRY_PROJECT=...
 ```
@@ -287,6 +358,44 @@ also how the Word add-in's Playwright suite tests reporting
 host that does not exist and the tests intercept the envelope.
 
 ## Adding reporting to new code
+
+### What makes an actionable error
+
+An issue should let a maintainer answer: what operation failed, where it
+failed, which release/runtime was running, whether recovery succeeded, and
+which request or job connects the evidence. Preserve the original exception
+and stack; add context rather than replacing it with `new Error("Failed")`.
+
+For example, an API issue titled `API 500 on POST /projects/:projectId/...`
+identifies the user-visible symptom. Its `request_id` links to the backend
+exception and stack, which explain the cause. An Office issue uses `stage`
+and `office_code` to identify the failing Word operation. Retryable job
+attempts are warnings; exhausted attempts are errors. These fields make an
+issue useful even when its exception title is a generic provider message.
+
+For each new reporting path:
+
+- Use a static operation/component and stage, plus a stable error code where
+  available. Keep request/job IDs out of the title and grouping fingerprint.
+- Retain safe diagnostic IDs and the original stack. Check the scrubber's
+  allowlist before assuming a new `extra` field will survive transmission.
+- Set release metadata and upload matching browser/add-in source maps in
+  every deployment build; one successful upload does not configure future
+  builds. Without maps, minified frames are much less useful.
+- Test a synthetic failure through the real path and inspect the outgoing
+  event. Assert both useful context and absence of sensitive content.
+- Configure an owner and a useful notification. Delivery to a recently active
+  member is not the same as assigning the issue to a responsible team.
+
+Sentry detects failures on instrumented paths; it cannot discover every
+incorrect result or silently swallowed exception. Console capture is a
+fallback, and its static label may need explicit context at the call site.
+The client 5xx fingerprint groups symptoms by endpoint/status, so investigate
+the correlated backend events before assuming one symptom has one cause.
+Throttling, filters, and delivery failures also mean Sentry's event count is
+not an exact count of every failure experienced by users.
+
+### Reporting helpers
 
 - Backend: throw, or call `sendInternalError(res, err)` — both paths report.
   For background work that must not throw, call `reportError(err, { tags:
