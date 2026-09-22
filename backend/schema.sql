@@ -7225,7 +7225,9 @@ $$;
 revoke all on function public.document_cache_writer_active(text[])
   from public, anon, authenticated;
 grant execute on function public.document_cache_writer_active(text[])
--- 2026-09-06: Native Google Drive integration.
+  to service_role;
+
+-- 2026-09-21: Native Google Drive integration.
 --
 -- First-party Drive tools that call the GA Drive REST API directly with a
 -- per-user OAuth token — no dependency on Google's preview-gated MCP server.

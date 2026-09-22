@@ -155,7 +155,7 @@ services:
       - ./backend/migrations/20260917_01_organization_access_followup.sql:/org-access-followup-migration.sql:ro
       - ./backend/migrations/20260917_02_memory_followup.sql:/memory-followup-migration.sql:ro
       - ./backend/migrations/20260921_01_chat_activity.sql:/chat-activity-migration.sql:ro
-      - ./backend/migrations/20260914_01_google_drive_integration.sql:/google-drive-migration.sql:ro
+      - ./backend/migrations/20260921_02_google_drive_integration.sql:/google-drive-migration.sql:ro
     entrypoint: ["bash", "-c"]
     command:
       - |

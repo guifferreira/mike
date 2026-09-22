@@ -27,6 +27,13 @@ describe("docker-compose db-init migration replay", () => {
         .filter((f) => f >= REPLAY_FROM)
         .sort();
 
+    it("uses a unique date and sequence for every dated migration", () => {
+        const slots = migrations
+            .map((file) => file.match(/^\d{8}_\d{2}_/)?.[0])
+            .filter(Boolean);
+        expect(new Set(slots).size).toBe(slots.length);
+    });
+
     it("has migrations to check", () => {
         expect(migrations.length).toBeGreaterThan(0);
     });
