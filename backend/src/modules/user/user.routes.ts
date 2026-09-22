@@ -389,6 +389,13 @@ userRouter.post(
                 return void res
                     .status(400)
                     .json({ code: result.code, detail: result.detail });
+            if (result.kind === "cleanup")
+                return void res.status(409).json({
+                    code: "connector_cleanup_failed",
+                    connectorId: result.connectorId,
+                    detail:
+                        "Connector validation failed, and the incomplete connector could not be removed. Remove it from Installed before trying again.",
+                });
             return void res.status(400).json({
                 detail: "Connector settings are invalid or the server could not be reached.",
             });

@@ -107,6 +107,27 @@ describe("POST /user/mcp-connectors", () => {
         expect(deleteUserMcpConnector).toHaveBeenCalledWith("u1", "c1", {});
     });
 
+    it("exposes the retained connector when failed validation cannot be cleaned up", async () => {
+        createUserMcpConnector.mockResolvedValue(connector);
+        refreshUserMcpConnectorTools.mockRejectedValue(
+            new Error("Bearer token is required"),
+        );
+        deleteUserMcpConnector.mockRejectedValue(new Error("delete failed"));
+
+        const res = await request(app).post("/user/mcp-connectors").send({
+            name: connector.name,
+            serverUrl: connector.serverUrl,
+        });
+
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual({
+            code: "connector_cleanup_failed",
+            connectorId: "c1",
+            detail: expect.stringContaining("Remove it from Installed"),
+        });
+        expect(deleteUserMcpConnector).toHaveBeenCalledWith("u1", "c1", {});
+    });
+
     it("keeps the new connector when OAuth authorization is required", async () => {
         createUserMcpConnector.mockResolvedValue(connector);
         refreshUserMcpConnectorTools.mockRejectedValue(

@@ -393,8 +393,8 @@ describe("startUserMcpConnectorOAuth", () => {
     });
 
     it("does not use generic OAuth client credentials as a provider fallback", async () => {
-        delete process.env.SLACK_MCP_OAUTH_CLIENT_ID;
-        delete process.env.SLACK_MCP_OAUTH_CLIENT_SECRET;
+        process.env.SLACK_MCP_OAUTH_CLIENT_ID = "   ";
+        process.env.SLACK_MCP_OAUTH_CLIENT_SECRET = "slack-client-secret";
         process.env.MCP_OAUTH_CLIENT_ID = "generic-client-id";
         process.env.MCP_OAUTH_CLIENT_SECRET = "generic-client-secret";
         const connector = makeConnector("https://mcp.slack.com/mcp");
@@ -432,7 +432,7 @@ describe("startUserMcpConnectorOAuth", () => {
 
     it("requires a provider client secret when the provider needs one", async () => {
         process.env.SLACK_MCP_OAUTH_CLIENT_ID = "slack-client-id";
-        delete process.env.SLACK_MCP_OAUTH_CLIENT_SECRET;
+        process.env.SLACK_MCP_OAUTH_CLIENT_SECRET = "   ";
         const connector = makeConnector("https://mcp.slack.com/mcp");
         loadConnectorMock.mockResolvedValue(connector);
         const db = {

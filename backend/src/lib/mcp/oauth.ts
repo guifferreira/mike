@@ -249,6 +249,10 @@ function oauthClientEnvFor(serverUrl: string) {
     };
 }
 
+function hasConfiguredCredential(value: string | undefined): value is string {
+    return typeof value === "string" && value.trim().length > 0;
+}
+
 /**
  * Returns operator setup guidance when a known provider cannot use dynamic
  * client registration and this deployment has no OAuth client configured.
@@ -262,8 +266,9 @@ export function mcpConnectorSetupInstructions(
     if (!provider?.setupInstructions) return null;
     const env = oauthClientEnvFor(serverUrl);
     if (
-        env.clientId &&
-        (!provider.requiresClientSecret || env.clientSecret)
+        hasConfiguredCredential(env.clientId) &&
+        (!provider.requiresClientSecret ||
+            hasConfiguredCredential(env.clientSecret))
     ) {
         return null;
     }

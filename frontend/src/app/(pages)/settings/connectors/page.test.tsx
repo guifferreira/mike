@@ -303,6 +303,93 @@ describe("ConnectorsPage OAuth poll cancellation", () => {
             }),
         ).toBeNull();
     });
+
+    it("keeps an incomplete connector visible when client cleanup fails", async () => {
+        const connector = makeSummary({
+            name: "Custom",
+            serverUrl: "https://custom.example/mcp",
+        });
+        vi.mocked(createMcpConnector).mockResolvedValueOnce({
+            connector,
+            oauthRequired: true,
+        });
+        vi.mocked(startMcpConnectorOAuth).mockRejectedValueOnce(
+            new Error("Authorization failed"),
+        );
+        vi.mocked(deleteMcpConnector).mockRejectedValueOnce(
+            new Error("Delete failed"),
+        );
+
+        render(<ConnectorsPage />);
+        await act(async () => {
+            await flushMicrotasks();
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Add custom connector" }),
+        );
+        fireEvent.change(screen.getByPlaceholderText("Connector label"), {
+            target: { value: "Custom" },
+        });
+        fireEvent.change(
+            screen.getByPlaceholderText("https://mcp.example.com/mcp"),
+            { target: { value: "https://custom.example/mcp" } },
+        );
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+            await flushMicrotasks();
+        });
+
+        expect(screen.getByRole("alert").textContent).toContain(
+            "could not be removed",
+        );
+        expect(
+            screen.getByRole("switch", { name: "Custom connector" }),
+        ).toBeTruthy();
+    });
+
+    it("reloads Installed when backend cleanup leaves a connector behind", async () => {
+        const connector = makeSummary({
+            name: "Retained connector",
+            serverUrl: "https://retained.example/mcp",
+        });
+        vi.mocked(listMcpConnectors)
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([connector]);
+        vi.mocked(createMcpConnector).mockRejectedValueOnce(
+            new MikeApiError({
+                message:
+                    "Connector validation failed, and the incomplete connector could not be removed. Remove it from Installed before trying again.",
+                status: 409,
+                code: "connector_cleanup_failed",
+            }),
+        );
+
+        render(<ConnectorsPage />);
+        await act(async () => {
+            await flushMicrotasks();
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Add custom connector" }),
+        );
+        fireEvent.change(screen.getByPlaceholderText("Connector label"), {
+            target: { value: "Retained connector" },
+        });
+        fireEvent.change(
+            screen.getByPlaceholderText("https://mcp.example.com/mcp"),
+            { target: { value: "https://retained.example/mcp" } },
+        );
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+            await flushMicrotasks();
+        });
+
+        expect(listMcpConnectors).toHaveBeenCalledTimes(2);
+        expect(
+            screen.getByRole("switch", { name: "Retained connector connector" }),
+        ).toBeTruthy();
+    });
 });
 
 describe("ConnectorsPage operator setup guidance", () => {
@@ -660,5 +747,30 @@ describe("ConnectorsPage details autosave", () => {
             (screen.getByPlaceholderText("Connector label") as HTMLInputElement)
                 .value,
         ).toBe("Newer edit");
+    });
+
+    it("waits for custom headers to become valid JSON before autosaving", async () => {
+        vi.mocked(updateMcpConnector).mockResolvedValue(
+            makeSummary({ name: "Renamed" }),
+        );
+        await openDetailsAndRename("Renamed");
+        fireEvent.change(screen.getByPlaceholderText('{"X-API-Key":"secret"}'), {
+            target: { value: '{"X-API-Key":' },
+        });
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1500);
+        });
+        expect(updateMcpConnector).not.toHaveBeenCalled();
+        expect(screen.queryByRole("alert")).toBeNull();
+
+        fireEvent.change(screen.getByPlaceholderText('{"X-API-Key":"secret"}'), {
+            target: { value: '{"X-API-Key":"secret"}' },
+        });
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1500);
+            await flushMicrotasks();
+        });
+        expect(updateMcpConnector).toHaveBeenCalledTimes(1);
     });
 });

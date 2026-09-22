@@ -640,11 +640,11 @@ export default function ConnectorsPage() {
       const discardCreatedConnector = async () => {
         if (!createdConnector) return true;
         const connectorId = createdConnector.id;
-        setConnectors((current) =>
-          current.filter((connector) => connector.id !== connectorId),
-        );
         try {
           await deleteMcpConnector(connectorId);
+          setConnectors((current) =>
+            current.filter((connector) => connector.id !== connectorId),
+          );
           createdConnector = null;
           return true;
         } catch {
@@ -701,6 +701,15 @@ export default function ConnectorsPage() {
         if (surface === "modal") {
           setAddStep("form");
           setAddAuthMessage(null);
+        }
+        if (
+          err instanceof MikeApiError &&
+          err.code === "connector_cleanup_failed"
+        ) {
+          // Creation failed after the backend inserted the row and its own
+          // cleanup also failed. Reload so the warning's instruction to remove
+          // the incomplete connector from Installed is immediately actionable.
+          await loadConnectors();
         }
         const message = userFacingApiError(err, "Failed to add connector.");
         const discarded = await discardCreatedConnector();
@@ -796,6 +805,16 @@ export default function ConnectorsPage() {
       detailDraft.bearerToken.trim().length > 0 ||
       detailDraft.customHeaders.trim().length > 0;
     if (!dirty) return;
+    // Headers are edited as free-form JSON. A pause while the object is only
+    // partially typed is not a failed save; wait until it parses before
+    // starting the debounce timer.
+    if (detailDraft.customHeaders.trim()) {
+      try {
+        parseCustomHeaders(detailDraft.customHeaders);
+      } catch {
+        return;
+      }
+    }
     const attempt = JSON.stringify([
       selectedConnector.id,
       name,

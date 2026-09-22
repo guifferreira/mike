@@ -70,6 +70,12 @@ export async function createMcpConnector(
 ): Promise<
     | { ok: true; connector: unknown; oauthRequired: boolean }
     | { ok: false; kind: "setup"; code: string; detail: string }
+    | {
+          ok: false;
+          kind: "cleanup";
+          connectorId: string;
+          error: unknown;
+      }
     | { ok: false; kind: "failed"; error: unknown }
 > {
     let createdConnectorId: string | null = null;
@@ -102,7 +108,22 @@ export async function createMcpConnector(
             if (err instanceof McpOAuthRequiredError) {
                 return { ok: true, connector, oauthRequired: true };
             }
-            await deleteUserMcpConnector(userId, connector.id, db);
+            try {
+                await deleteUserMcpConnector(userId, connector.id, db);
+            } catch (cleanupError) {
+                console.error("[user/mcp-connectors] cleanup failed", {
+                    userId,
+                    connectorId: connector.id,
+                    registrationError: errorMessage(err),
+                    cleanupError: errorMessage(cleanupError),
+                });
+                return {
+                    ok: false,
+                    kind: "cleanup",
+                    connectorId: connector.id,
+                    error: cleanupError,
+                };
+            }
             createdConnectorId = null;
             throw err;
         }
