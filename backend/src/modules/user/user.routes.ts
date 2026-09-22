@@ -384,11 +384,19 @@ userRouter.post(
             bearerToken,
             headers,
         });
-        if (!result.ok)
+        if (!result.ok) {
+            if (result.kind === "setup")
+                return void res
+                    .status(400)
+                    .json({ code: result.code, detail: result.detail });
             return void res.status(400).json({
                 detail: "Connector settings are invalid or the server could not be reached.",
             });
-        res.status(201).json(result.connector);
+        }
+        res.status(201).json({
+            connector: result.connector,
+            oauthRequired: result.oauthRequired,
+        });
     }),
 );
 

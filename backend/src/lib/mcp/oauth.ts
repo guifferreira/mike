@@ -236,18 +236,38 @@ export function providerAuthorizationParams(
 }
 
 function oauthClientEnvFor(serverUrl: string) {
-    const prefix = mcpOAuthProviderFor(serverUrl)?.envPrefix ?? "MCP_OAUTH";
+    const provider = mcpOAuthProviderFor(serverUrl);
+    const prefix = provider?.envPrefix;
     return {
-        clientId:
-            process.env[`${prefix}_CLIENT_ID`] ||
-            process.env.MCP_OAUTH_CLIENT_ID,
-        clientSecret:
-            process.env[`${prefix}_CLIENT_SECRET`] ||
-            process.env.MCP_OAUTH_CLIENT_SECRET,
+        clientId: prefix ? process.env[`${prefix}_CLIENT_ID`] : undefined,
+        clientSecret: prefix
+            ? process.env[`${prefix}_CLIENT_SECRET`]
+            : undefined,
         scope:
-            process.env[`${prefix}_SCOPE`] ||
+            (prefix ? process.env[`${prefix}_SCOPE`] : undefined) ||
             process.env.MCP_OAUTH_DEFAULT_SCOPE,
     };
+}
+
+/**
+ * Returns operator setup guidance when a known provider cannot use dynamic
+ * client registration and this deployment has no OAuth client configured.
+ * Creation calls this before inserting a connector; OAuth start repeats the
+ * check in case configuration changes between those requests.
+ */
+export function mcpConnectorSetupInstructions(
+    serverUrl: string,
+): string | null {
+    const provider = mcpOAuthProviderFor(serverUrl);
+    if (!provider?.setupInstructions) return null;
+    const env = oauthClientEnvFor(serverUrl);
+    if (
+        env.clientId &&
+        (!provider.requiresClientSecret || env.clientSecret)
+    ) {
+        return null;
+    }
+    return provider.setupInstructions();
 }
 
 async function registerOAuthClient(
@@ -761,15 +781,20 @@ export async function startUserMcpConnectorOAuth(
     // registration, so without a pre-configured OAuth client the SDK's normal
     // "no client? register one" fallback dead-ends deep inside the flow with a
     // message no operator can act on. Fail here instead, with the provider's
-    // exact setup instructions — including the redirect URI this deployment
-    // needs, so it can be copy-pasted into the provider's console form.
-    const providerQuirks = mcpOAuthProviderFor(connector.server_url);
-    if (!env.clientId && providerQuirks?.setupInstructions) {
+    // concise setup guidance. Deployment-specific steps live in the connector
+    // guide linked by the frontend warning.
+    const setupInstructions = mcpConnectorSetupInstructions(
+        connector.server_url,
+    );
+    if (setupInstructions) {
         const stored = await loadOAuthToken(connector.id, db);
-        if (!stored?.client_id) {
-            throw new ConnectorSetupError(
-                providerQuirks.setupInstructions(redirectUri),
-            );
+        const provider = mcpOAuthProviderFor(connector.server_url);
+        if (
+            !stored?.client_id ||
+            (provider?.requiresClientSecret &&
+                !stored.encrypted_client_secret)
+        ) {
+            throw new ConnectorSetupError(setupInstructions);
         }
     }
     // Scope is intentionally left to the SDK when not explicitly configured: it
