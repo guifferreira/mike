@@ -890,6 +890,51 @@ describe("mapTRMessages", () => {
 // src/app/hooks/useAssistantChat.sse.test.ts.
 // ---------------------------------------------------------------------------
 
+describe("API transport cancellation", () => {
+    it("preserves AbortError without reporting a network failure", async () => {
+        const error = new DOMException("The operation was aborted", "AbortError");
+        fetchMock.mockRejectedValueOnce(error);
+
+        await expect(streamChat({ messages: [] })).rejects.toBe(error);
+
+        expect(reportNetworkFailure).not.toHaveBeenCalled();
+    });
+
+    it.each([new Error("User stopped the response"), "navigation", null])(
+        "preserves a custom signal cancellation reason: %s",
+        async (reason) => {
+            const controller = new AbortController();
+            fetchMock.mockImplementationOnce(async () => {
+                controller.abort(reason);
+                throw controller.signal.reason;
+            });
+
+            await expect(streamChat({
+                messages: [],
+                signal: controller.signal,
+            })).rejects.toBe(reason);
+
+            expect(reportNetworkFailure).not.toHaveBeenCalled();
+        },
+    );
+
+    it("still reports a network failure when the signal is active", async () => {
+        const controller = new AbortController();
+        const error = new TypeError("Failed to fetch");
+        fetchMock.mockRejectedValueOnce(error);
+
+        await expect(streamChat({
+            messages: [],
+            signal: controller.signal,
+        })).rejects.toBe(error);
+
+        expect(reportNetworkFailure).toHaveBeenCalledExactlyOnceWith(error, {
+            method: "POST",
+            url: "/api/chat",
+        });
+    });
+});
+
 describe("streamChat", () => {
     it("POSTs with the SSE accept header and forwards the signal outside the body", async () => {
         fetchMock.mockResolvedValue(streamResponse([]));

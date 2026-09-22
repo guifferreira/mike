@@ -59,14 +59,16 @@ authentication behavior, Ollama setup, and first-run guidance.
 ### Telemetry
 
 Error reports are sent to the Mike project's own Sentry by default, so the
-maintainers can fix what forks and self-hosted installs run into. A report
-never contains document text, request bodies, cookies, auth headers, or email
-addresses; on a community install it also drops the machine name, user ids,
-request headers, breadcrumbs, device and locale details, and any absolute file
-path, keeping only where in Mike's own code the error happened, the route
-pattern, OS/runtime name and version, environment, and release. Everything is
-scrubbed in-process before it leaves your machine (see
-docs/observability.md). To opt out, set `SENTRY_DISABLED=true`
+maintainers can fix what forks and self-hosted installs run into. Reports
+exclude request bodies, raw console payloads, cookies, and credential headers;
+common credential and email patterns are redacted. Community reports also
+remove user/machine identity, URL origins, breadcrumbs, device and locale
+details, and absolute filesystem paths. Diagnostic code locations, routes,
+ids, OS/runtime versions, environment, and release remain. Scrubbing happens
+in-process, but arbitrary legal text inside an error message cannot be
+recognized automatically: keep error messages and logging labels free of
+user content. See the observability guide for the policy and limitations.
+To opt out, set `SENTRY_DISABLED=true`
 (`NEXT_PUBLIC_SENTRY_DISABLED=true` / `REACT_APP_SENTRY_DISABLED=true` for the
 browser and add-in builds); to use your own Sentry instead, set the matching
 `*_SENTRY_DSN`.

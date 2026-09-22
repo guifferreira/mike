@@ -96,6 +96,17 @@ const apiFetch: typeof fetch = async (input, init) => {
     try {
         return await authenticatedFetch(input, init);
     } catch (error) {
+        // Stopping a stream or leaving a screen is expected. Abort reasons
+        // may be arbitrary values, so the signal also covers custom reasons.
+        if (
+            init?.signal?.aborted ||
+            (typeof error === "object" &&
+                error !== null &&
+                "name" in error &&
+                error.name === "AbortError")
+        ) {
+            throw error;
+        }
         reportNetworkFailure(error, {
             method: init?.method ?? "GET",
             url: String(input),

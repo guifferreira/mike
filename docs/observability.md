@@ -12,22 +12,25 @@ Every Mike runtime can report unexpected failures to [Sentry](https://sentry.io)
 | Word add-in (task pane, ribbon commands, OAuth dialog) | `@sentry/react` | `REACT_APP_SENTRY_DSN` at **build** time |
 
 **On by default.** Error reports are sent to the Mike project's own Sentry by default, so the
-maintainers can fix what forks and self-hosted installs run into. A report
-never contains document text, request bodies, cookies, auth headers, or email
-addresses; on a community install it also drops the machine name, user ids,
-request headers, breadcrumbs, device and locale details, and any absolute file
-path, keeping only where in Mike's own code the error happened, the route
-pattern, OS/runtime name and version, environment, and release. Everything is
-scrubbed in-process before it leaves your machine (see
-docs/observability.md). To opt out, set `SENTRY_DISABLED=true`
+maintainers can fix what forks and self-hosted installs run into. Reports
+exclude request bodies, raw console payloads, cookies, and credential headers;
+common credential and email patterns are redacted. Community reports also
+remove user/machine identity, URL origins, breadcrumbs, device and locale
+details, and absolute filesystem paths. Diagnostic code locations, routes,
+ids, OS/runtime versions, environment, and release remain. Scrubbing happens
+in-process, but arbitrary legal text inside an error message cannot be
+recognized automatically: keep error messages and logging labels free of
+user content. See the observability guide for the policy and limitations.
+To opt out, set `SENTRY_DISABLED=true`
 (`NEXT_PUBLIC_SENTRY_DISABLED=true` / `REACT_APP_SENTRY_DISABLED=true` for the
 browser and add-in builds); to use your own Sentry instead, set the matching
 `*_SENTRY_DSN`.
 
 Resolution order, per runtime: `*_SENTRY_DISABLED=true` → off;
-`*_SENTRY_DSN` set → that DSN; otherwise the built-in Mike project DSN. Test
+`*_SENTRY_DSN` set → that DSN; otherwise the built-in Mike project DSN. Backend test
 processes (vitest, `NODE_ENV=test`) never report unless
-`SENTRY_ALLOW_IN_TESTS=true`. Every event carries `install=community` unless
+`SENTRY_ALLOW_IN_TESTS=true`. Browser tests disable reporting or use intercepted
+transports. Every event carries `install=community` unless
 the deployment sets `SENTRY_INSTALL=official` (env, all three runtimes), and
 `environment` defaults to `self-hosted`, so the official deployment and the
 community are separable in Sentry. The boot log says which applies:
@@ -70,8 +73,8 @@ however many users hit it.
 - Process lifecycle: boot configuration failures, worker-thread crashes and
   respawns, graceful-shutdown errors, workflow-sync job failures. Unhandled
   promise rejections are reported and then still exit the process, exactly
-  as Node does without a DSN; enabling Sentry never changes how the process
-  lives or dies.
+  as Node does with reporting disabled; enabling Sentry never changes how
+  the process lives or dies.
 - Best-effort work that must not fail its caller but must not vanish either:
   storage deletes during rollbacks, cancelled uploads, and expiry sweeps go
   through `deleteFileBestEffort(key, stage)` and are reported as warnings
@@ -94,6 +97,7 @@ Each event is tagged with `service=mike-backend`, `role` (`api`, `worker`,
   and are shown, not reported.
 - Requests that never reached the server (backend down, mid-deploy, network),
   as warnings grouped per endpoint rather than one "Failed to fetch" issue.
+  Deliberate cancellation (an aborted signal or `AbortError`) is not reported.
 - Assistant chat streams that fail for a reason other than the user stopping
   them.
 - Server side: gateway failures to reach the backend, and render/route-handler
@@ -136,12 +140,16 @@ Mike handles privileged legal documents, so the SDKs run with
   JWTs, provider keys (`sk-…`, `AKIA…`, GitHub and Slack tokens), email
   addresses, and the query strings of URLs. A Postgres error quoting
   `Key (email)=(…)` arrives as `Key (email)=([email])`;
-- keeps only an allowlist of keys under `extra` and breadcrumb data (job,
-  document, session, file, review and request ids, error name/message/stack,
+- excludes raw console arguments and body fields, and keeps only an allowlist
+  of keys under `extra` and breadcrumb data (job, document, session, file,
+  review and request ids, error name/message/stack,
   path/url, status/code). Any other key is replaced with `[Filtered]`,
   because a field holding document text has no telltale name. Extend the
   allowlist in the `shared-redaction` block (one block, mirrored in the
   backend and shared scrubbers; a test fails if the copies differ);
+- applies text/credential scrubbing to tags and grouping fingerprints too;
+  community reports also remove URL origins from these fields, extras, and
+  error text; network failures use a normalized pathname, never a backend host;
 - replaces the value of any secret-looking key (`token`, `secret`,
   `password`, `api_key`, `authorization`, `cookie`, `credential`, ...) in the
   SDK's own contexts with `[Filtered]`.
@@ -236,8 +244,11 @@ and `NODE_OPTIONS` in the Dockerfile), so backend frames already read
 
 ## Verifying a deployment
 
-1. Set the DSN(s) and restart. The backend logs `[sentry] enabled for api
-   (environment ...)` at boot; without a DSN it logs `[sentry] disabled`.
+1. Set a local or deployment-owned DSN and restart. The backend logs
+   `[sentry] enabled for api (environment ...)` for an explicit DSN. An unset
+   DSN uses Mike's project and logs that destination; only
+   `SENTRY_DISABLED=true` (or the test-process guard) disables reporting.
+   Rebuild browser bundles after changing their `*_SENTRY_*` variables.
 2. Backend: set `SENTRY_ENABLE_TEST_ROUTE=true`, restart, and run
 
    ```bash
@@ -290,5 +301,9 @@ host that does not exist and the tests intercept the envelope.
 - Tags are indexed and filterable; keep them low-cardinality (a component
   name, a job kind, a status). Ids go in `extra`.
 - Never put document text, prompts, file names from user uploads, or email
-  addresses on an event. The scrubber catches obvious keys; it cannot know
-  that `extra.note` is a contract clause.
+  addresses in error messages, logging labels, or reporting context. Keep the
+  first console argument a static diagnostic label. Raw console arguments
+  and `body` fields are excluded; additional positional strings are not used
+  in event titles or grouping keys. Attach safe diagnostic ids explicitly.
+  Pattern redaction cannot recognise arbitrary legal text inside an Error
+  message, so upstream error messages still need care at their source.

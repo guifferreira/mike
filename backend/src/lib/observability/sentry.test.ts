@@ -337,7 +337,7 @@ describe("scrubEvent", () => {
     expect(scrubbed.extra?.error_stack).toContain("TypeError: column does not exist");
   });
 
-  it("leaves a console message without any error in its arguments alone", () => {
+  it("retains only the console label when other arguments are strings", () => {
     const event = {
       logger: "console",
       message: "[dbq] claim failed relation missing",
@@ -345,7 +345,7 @@ describe("scrubEvent", () => {
     const scrubbed = scrubEvent(event, {
       captureContext: { extra: { arguments: ["[dbq] claim failed", "relation missing"] } },
     })!;
-    expect(scrubbed.message).toBe("[dbq] claim failed relation missing");
+    expect(scrubbed.message).toBe("[dbq] claim failed");
     expect(scrubbed.fingerprint).toBeUndefined();
   });
 
@@ -692,7 +692,7 @@ describe("value-level redaction (due-diligence findings)", () => {
     for (const secret of SECRETS) expect(out).not.toContain(secret);
     // What must survive: the shape of the failure and the ids to find it.
     expect(out).toContain('"job_id":"j1"');
-    expect(out).toContain('"documentId":"d1"');
+    expect(out).not.toContain('"documentId":"d1"'); // raw console payloads are excluded
     expect(out).toContain("profiles_email_key");
     expect(out).toContain("[email]");
   });

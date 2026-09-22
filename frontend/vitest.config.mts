@@ -12,6 +12,10 @@ export default defineConfig({
         // the same module specifiers the app uses.
         alias: [
             {
+                find: /^@mike\/upload-session-client$/,
+                replacement: resolvePath("./src/shared/api/uploadSessionClient.ts"),
+            },
+            {
                 find: /^@\/(.*)$/,
                 replacement: resolvePath("./src/$1"),
             },

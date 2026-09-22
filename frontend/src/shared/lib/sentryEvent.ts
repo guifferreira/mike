@@ -46,7 +46,7 @@ const SENSITIVE_QUERY_PATTERN =
 const TOKEN_PATH_SEGMENTS = new Set(["download"]);
 /** Keys whose string value is a path or URL: redactUrl sees bare paths too. */
 const URL_KEY_PATTERN =
-    /^(url|href|path|query_string|referer|referrer|location|redirect(_uri)?)$/i;
+    /^(url|href|path|http_route|query_string|referer|referrer|location|redirect(_uri)?)$/i;
 
 /**
   * Strip credentials from a URL or path while keeping it recognisable:
@@ -150,13 +150,11 @@ export function redactText(value: string): string {
 /**
   * Keys allowed under `extra` and breadcrumb data, at any depth. Everything
   * else is replaced, not only secret-looking keys: an `extra.note` holding a
-  * contract clause has no telltale name, and the console bridge copies whole
-  * logged objects into `extra.arguments`. The list is the ids and error
-  * fields this codebase actually attaches; extend it deliberately.
+  * contract clause has no telltale name. Raw console arguments and bodies
+  * are always excluded, including strings that have no secret-shaped keys.
+  * Attach diagnostic ids explicitly instead of copying logged payloads.
   */
 const EXTRA_KEY_ALLOWLIST = new Set([
-    "arguments",
-    "body",
     "bookmarkName",
     "code",
     "dedupe_key",
@@ -308,6 +306,7 @@ type CommunityEvent = {
     user?: unknown;
     breadcrumbs?: unknown;
     message?: unknown;
+    fingerprint?: string[];
     tags?: Record<string, unknown>;
     extra?: Record<string, unknown>;
     contexts?: Record<string, unknown>;
@@ -355,6 +354,15 @@ export function redactFilesystemPaths(text: string): string {
     });
 }
 
+/** Community reports must not identify a deployment through an embedded URL. */
+function redactCommunityText(text: string): string {
+    return redactFilesystemPaths(
+        redactText(text).replace(/https?:\/\/[^\s"'<>]+/gi, (url) =>
+            url.replace(/^https?:\/\/[^/?#]+/i, "") || "/",
+        ),
+    );
+}
+
 function mapStringLeaves(
     value: unknown,
     fn: (text: string) => string,
@@ -392,11 +400,13 @@ export function minimiseForCommunity<T extends CommunityEvent>(event: T): T {
     if (event.tags) {
         delete event.tags.server_name;
         delete event.tags.url;
+        event.tags = mapStringLeaves(event.tags, redactCommunityText) as Record<string, unknown>;
     }
+    if (event.fingerprint) event.fingerprint = event.fingerprint.map(redactCommunityText);
     if (event.request) {
         const url =
             typeof event.request.url === "string"
-                ? event.request.url.replace(/^https?:\/\/[^/]+/, "")
+                ? redactCommunityText(event.request.url)
                 : undefined;
         const method = event.request.method;
         event.request = {
@@ -421,11 +431,11 @@ export function minimiseForCommunity<T extends CommunityEvent>(event: T): T {
         }
     }
     if (typeof event.message === "string") {
-        event.message = redactFilesystemPaths(event.message);
+        event.message = redactCommunityText(event.message);
     }
     for (const value of event.exception?.values ?? []) {
         if (typeof value.value === "string") {
-            value.value = redactFilesystemPaths(value.value);
+            value.value = redactCommunityText(value.value);
         }
         for (const frame of value.stacktrace?.frames ?? []) {
             if (typeof frame.filename === "string") {
@@ -443,7 +453,7 @@ export function minimiseForCommunity<T extends CommunityEvent>(event: T): T {
         }
     }
     if (event.extra) {
-        event.extra = mapStringLeaves(event.extra, redactFilesystemPaths) as Record<
+        event.extra = mapStringLeaves(event.extra, redactCommunityText) as Record<
             string,
             unknown
         >;
@@ -621,6 +631,10 @@ export function createEventScrubber(options?: {
             if (args.some((arg) => findNested(arg, (c) => reported.has(c)))) {
                 return null;
             }
+            // Only the first argument is the logging label. Other strings
+            // may be document/model output; never concatenate them into titles
+            // or grouping keys. Raw arguments are removed by scrubFreeform.
+            const label = typeof args[0] === "string" ? args[0].trim() : "Console error";
             const nestedError = args
                 .map((arg) =>
                     typeof arg === "object" && arg instanceof Error
@@ -629,16 +643,14 @@ export function createEventScrubber(options?: {
                 )
                 .find((found): found is Error => found instanceof Error);
             if (nestedError) {
-                const label = args
-                    .filter((arg): arg is string => typeof arg === "string")
-                    .join(" ")
-                    .trim();
                 event.message = `${label ? `${label}: ` : ""}${nestedError.name}: ${nestedError.message}`;
                 event.fingerprint = ["console", label, nestedError.name];
                 event.extra = {
                     ...(event.extra ?? {}),
                     error_stack: nestedError.stack,
                 };
+            } else if (!event.exception?.values?.length) {
+                event.message = label;
             }
         }
 
@@ -652,6 +664,8 @@ export function createEventScrubber(options?: {
                 value.value = redactText(value.value);
             }
         }
+        if (event.tags) event.tags = redactShaped(event.tags) as Record<string, unknown>;
+        if (event.fingerprint) event.fingerprint = event.fingerprint.map(redactText);
         if (event.request) {
             delete event.request.data;
             delete event.request.cookies;
@@ -708,8 +722,8 @@ export function createEventScrubber(options?: {
  * Sentry issue: /projects/8f1c…/documents/42 → /projects/:id/documents/:id.
  */
 export function normalizeApiPath(path: string): string {
-    const withoutQuery = path.split("?")[0] ?? path;
-    return withoutQuery
+    const pathname = path.replace(/^(?:https?:)?\/\/[^/?#]+/i, "").split(/[?#]/)[0] || "/";
+    return redactText(redactUrl(pathname))
         .replace(
             /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
             ":id",

@@ -1,7 +1,7 @@
 /**
  * Error reporting for the Word add-in. Same policy as the web app (see
  * frontend/src/app/lib/errorReporting.ts and the shared scrubber it uses):
- * off without a DSN, no PII beyond the user id, every console.error bridged,
+ * on by default with a community privacy policy, every console.error bridged,
  * explicit reports deduplicated against the bridge.
  *
  * The add-in adds one thing the web app does not have: the Office host. A
@@ -229,7 +229,7 @@ export function reportNetworkFailure(
     applyContext(scope, {
       level: "warning",
       tags: { component: "mike-api", network: true, http_method: request.method, http_route: route },
-      extra: { url: request.url },
+      extra: { url: route },
       fingerprint: ["api-network", request.method, route],
     });
     return Sentry.captureException(error);

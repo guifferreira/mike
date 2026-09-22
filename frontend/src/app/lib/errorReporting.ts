@@ -2,7 +2,7 @@
  * Error reporting for the web app: a thin, testable layer over the Sentry
  * SDK. Application code calls these helpers instead of `@sentry/nextjs`
  * directly so the PII policy (see `@/shared/lib/sentryEvent`) and the
- * "no-op without a DSN" rule live in one place.
+ * explicit opt-out rule live in one place.
  */
 
 import * as Sentry from "@sentry/nextjs";
@@ -130,7 +130,7 @@ export function reportNetworkFailure(
                 http_method: request.method,
                 http_route: route,
             },
-            extra: { url: request.url },
+            extra: { url: route },
             fingerprint: ["api-network", request.method, route],
         });
         return Sentry.captureException(error);

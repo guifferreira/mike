@@ -97,6 +97,17 @@ async function sendRequest(
   try {
     return await clientConfig.fetchImpl(url, init);
   } catch (error) {
+    // Preserve cancellation identity for callers and avoid reporting normal
+    // user stops, including signals aborted with a custom reason.
+    if (
+      init.signal?.aborted ||
+      (typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        error.name === "AbortError")
+    ) {
+      throw error;
+    }
     reportNetworkFailure(error, { method: init.method ?? "GET", url });
     throw new Error(
       describeNetworkFailure(error, {

@@ -171,16 +171,16 @@ describe("console bridge post-processing", () => {
             message: "[x] failed [object Object]",
             extra: {},
         };
-        const scrubbed = scrubEvent(event, consoleHint(["[x]", "failed", { cause: { error } }]))!;
+        const scrubbed = scrubEvent(event, consoleHint(["[x] failed", { cause: { error } }]))!;
         expect(scrubbed.message).toBe("[x] failed: RangeError: too deep");
         expect(scrubbed.fingerprint).toEqual(["console", "[x] failed", "RangeError"]);
         expect(scrubbed.extra?.error_stack).toContain("RangeError: too deep");
     });
 
-    it("does not retitle when the only error is a top-level argument (already an exception event)", () => {
+    it("preserves an exception event when the error is a top-level argument", () => {
         const { scrubEvent } = createEventScrubber({ install: "official" });
         const scrubbed = scrubEvent(
-            { logger: "console", message: "kept" },
+            { logger: "console", message: "kept", exception: { values: [{ value: "top" }] } },
             consoleHint(["label", new Error("top")]),
         )!;
         expect(scrubbed.message).toBe("kept");
@@ -205,7 +205,7 @@ describe("console bridge post-processing", () => {
         expect(
             scrubEvent({ logger: "console", message: "m" }, consoleHint(["a", 1, null]))!
                 .message,
-        ).toBe("m");
+        ).toBe("a");
     });
 
     it("stops searching past two levels of nesting", () => {
@@ -214,11 +214,17 @@ describe("console bridge post-processing", () => {
             { logger: "console", message: "m" },
             consoleHint([{ a: { b: { c: new Error("deep") } } }]),
         )!;
-        expect(scrubbed.message).toBe("m");
+        expect(scrubbed.message).toBe("Console error");
     });
 });
 
 describe("normalizeApiPath", () => {
+    it("uses a pathname for absolute endpoints and scrubs download credentials", () => {
+        expect(normalizeApiPath("https://internal.firm.example/api/projects/123?key=x#fragment"))
+            .toBe("/api/projects/:id");
+        expect(normalizeApiPath("https://internal.firm.example")).toBe("/");
+        expect(normalizeApiPath("/download/private-download-token")).toBe("/download/[Filtered]");
+    });
     it("replaces uuids and numeric segments and drops the query string", () => {
         expect(
             normalizeApiPath(
@@ -357,7 +363,7 @@ describe("value-level redaction (due-diligence findings)", () => {
         for (const secret of SECRETS) expect(out).not.toContain(secret);
         // What must survive: the shape of the failure and the ids to find it.
         expect(out).toContain('"job_id":"j1"');
-        expect(out).toContain('"documentId":"d1"');
+        expect(out).not.toContain('"documentId":"d1"'); // raw console payloads are excluded
         expect(out).toContain("profiles_email_key");
         expect(out).toContain("[email]");
     });
@@ -415,6 +421,41 @@ describe("resolveDsn", () => {
 });
 
 describe("community install minimisation", () => {
+    it("removes deployment URLs from tags, extras, grouping keys and error text", () => {
+        const url = "https://internal.firm.example/api/projects";
+        const out = createEventScrubber().scrubEvent({
+            message: `Failed to fetch ${url}`,
+            exception: { values: [{ value: `Failed to fetch ${url}` }] },
+            tags: { http_route: url, component: "mike-api" },
+            extra: { url, path: url, error_stack: `fetch ${url}` },
+            fingerprint: ["api-network", "GET", url],
+        })!;
+        expect(JSON.stringify(out)).not.toContain("internal.firm.example");
+        expect(out.tags.http_route).toBe("/api/projects");
+        expect(out.extra.url).toBe("/api/projects");
+        expect(out.fingerprint).toEqual(["api-network", "GET", "/api/projects"]);
+    });
+
+    it.each(["community", "official"] as const)("scrubs tags and fingerprints for %s installs", (install) => {
+        const out = createEventScrubber({ install }).scrubEvent({
+            tags: { detail: "person@example.test", api_key: "private-key" },
+            fingerprint: ["person@example.test", "Bearer private-token"],
+        })!;
+        expect(out.tags).toEqual({ detail: "[email]", api_key: "[Filtered]" });
+        expect(out.fingerprint).toEqual(["[email]", "Bearer [Filtered]"]);
+    });
+
+    it.each(["community", "official"] as const)("drops raw bodies and positional console data for %s installs", (install) => {
+        const args = ["[model] failed", "SYNTHETIC_PRIVATE_CLAUSE", { body: "SYNTHETIC_PRIVATE_CLAUSE" }];
+        const out = createEventScrubber({ install }).scrubEvent({
+            logger: "console",
+            message: "[model] failed SYNTHETIC_PRIVATE_CLAUSE",
+            extra: { arguments: args, body: "SYNTHETIC_PRIVATE_CLAUSE", documentId: "d1" },
+        }, { captureContext: { extra: { arguments: args } } })!;
+        expect(JSON.stringify(out)).not.toContain("SYNTHETIC_PRIVATE_CLAUSE");
+        expect(out.message).toBe("[model] failed");
+        expect(out.extra.documentId).toBe("d1");
+    });
     it("relativises code locations and redacts filesystem paths in text", () => {
         expect(repoRelativePath("/Users/jane/work/mike/backend/src/lib/x.ts")).toBe("backend/src/lib/x.ts");
         expect(repoRelativePath("/app/frontend/src/app/page.tsx")).toBe("frontend/src/app/page.tsx");
