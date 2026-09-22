@@ -137,16 +137,23 @@ describe("disk-backed file downloads and configurable budgets", () => {
     it("allows a progressing transfer to continue beyond 30 seconds", async () => {
         vi.useFakeTimers();
         let stream!: ReadableStreamDefaultController<Uint8Array>;
+        let pulls = 0;
         vi.stubGlobal(
             "fetch",
             vi.fn(
                 async () =>
                     new Response(
-                        new ReadableStream({
-                            start(controller) {
-                                stream = controller;
+                        new ReadableStream(
+                            {
+                                start(controller) {
+                                    stream = controller;
+                                },
+                                pull() {
+                                    pulls++;
+                                },
                             },
-                        }),
+                            { highWaterMark: 0 },
+                        ),
                     ),
             ),
         );
@@ -154,10 +161,12 @@ describe("disk-backed file downloads and configurable budgets", () => {
             new URL("https://www.googleapis.com/file"),
             "token",
         );
-        // Let the actual filesystem create/open complete before advancing time.
-        await vi.waitFor(() => expect(stream).toBeDefined());
+        // With no prefetch, the next pull proves the previous disk write and
+        // idle-timer reset finished. Fake time must not outrun real filesystem IO.
+        await vi.waitFor(() => expect(pulls).toBe(1));
         for (let i = 0; i < 4; i++) {
             stream.enqueue(new Uint8Array(1));
+            await vi.waitFor(() => expect(pulls).toBe(i + 2));
             await vi.advanceTimersByTimeAsync(10_000);
         }
         stream.close();
