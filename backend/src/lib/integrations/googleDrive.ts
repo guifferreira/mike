@@ -18,6 +18,8 @@
  * with the safe surface.
  */
 import crypto from "crypto";
+import { createReadStream } from "node:fs";
+import { googleDriveLimits } from "./googleDriveLimits";
 import { createServerSupabase } from "../supabase";
 import {
     base64Url,
@@ -26,8 +28,16 @@ import {
     stateHash,
 } from "../mcp/client";
 import { ConnectorSetupError } from "../mcp/errors";
-import type { Db, McpToolEvent } from "../mcp/types";
-import { extractPdfText } from "../pdfText";
+import type { Db } from "../supabase";
+import type { McpToolEvent } from "../mcp/types";
+import { safeError } from "../safeError";
+import { extractGoogleDriveBinary } from "./googleDriveExtract";
+import {
+    googleDriveRequest,
+    GoogleDriveUserError,
+    downloadGoogleDriveFile,
+    googleDriveHttpError,
+} from "./googleDriveHttp";
 
 const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -46,7 +56,7 @@ const MAX_FILE_TEXT_CHARS = 60_000;
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 25;
 
-export class GoogleDriveAuthRequiredError extends Error {
+export class GoogleDriveAuthRequiredError extends GoogleDriveUserError {
     code = "google_drive_auth_required";
     constructor(message = "Google Drive is not connected for this account.") {
         super(message);
@@ -62,14 +72,21 @@ export function googleDriveOAuthEnv(): {
     clientId?: string;
     clientSecret?: string;
 } {
-    return {
-        clientId:
-            process.env.GOOGLE_DRIVE_OAUTH_CLIENT_ID ||
-            process.env.GOOGLE_MCP_OAUTH_CLIENT_ID,
-        clientSecret:
-            process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET ||
-            process.env.GOOGLE_MCP_OAUTH_CLIENT_SECRET,
-    };
+    // Select a complete profile; never mix a Drive client ID with an MCP secret.
+    const dedicated = !!(
+        process.env.GOOGLE_DRIVE_OAUTH_CLIENT_ID?.trim() ||
+        process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET?.trim()
+    );
+    return dedicated
+        ? {
+              clientId: process.env.GOOGLE_DRIVE_OAUTH_CLIENT_ID?.trim(),
+              clientSecret:
+                  process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET?.trim(),
+          }
+        : {
+              clientId: process.env.GOOGLE_MCP_OAUTH_CLIENT_ID?.trim(),
+              clientSecret: process.env.GOOGLE_MCP_OAUTH_CLIENT_SECRET?.trim(),
+          };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,8 +120,17 @@ export async function startGoogleDriveOAuth(
 ): Promise<{ authorizationUrl: string }> {
     const env = googleDriveOAuthEnv();
     if (!env.clientId || !env.clientSecret) {
-        throw new ConnectorSetupError(googleDriveSetupInstructions(redirectUri));
+        throw new ConnectorSetupError(
+            googleDriveSetupInstructions(redirectUri),
+        );
     }
+
+    const { error: cleanupError } = await db
+        .from("google_drive_oauth_states")
+        .delete()
+        .eq("user_id", userId)
+        .lt("expires_at", new Date().toISOString());
+    if (cleanupError) throw cleanupError;
 
     const codeVerifier = base64Url(crypto.randomBytes(32));
     const codeChallenge = base64Url(
@@ -153,10 +179,6 @@ export async function completeGoogleDriveOAuth(
         .maybeSingle();
     if (error) throw error;
     if (!data) throw new Error("OAuth state is invalid or expired.");
-    await db
-        .from("google_drive_oauth_states")
-        .delete()
-        .eq("state_hash", stateHash(state));
 
     const decrypted = decryptString(
         String(data.encrypted_state_config),
@@ -170,7 +192,7 @@ export async function completeGoogleDriveOAuth(
         throw new Error("Google Drive OAuth client is not configured.");
     }
 
-    const response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+    const response = await googleDriveRequest(GOOGLE_TOKEN_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -184,15 +206,36 @@ export async function completeGoogleDriveOAuth(
     });
     const token = (await response.json()) as Record<string, unknown>;
     if (!response.ok || typeof token.access_token !== "string") {
-        const detail =
-            typeof token.error === "string"
-                ? `${token.error}${typeof token.error_description === "string" ? `: ${token.error_description}` : ""}`
-                : `HTTP ${response.status}`;
-        throw new Error(`Google token exchange failed (${detail}).`);
+        throw new Error(
+            `Google token exchange failed (HTTP ${response.status}).`,
+        );
     }
 
     const userId = String(data.user_id);
-    await storeTokens(userId, token, db);
+    // A new grant must include the requested permission and a refresh token.
+    // Never preserve a previous Google account's refresh token on reconnect.
+    if (
+        !hasDriveScope(token.scope) ||
+        typeof token.refresh_token !== "string" ||
+        !token.refresh_token
+    ) {
+        throw new GoogleDriveUserError(
+            "Google Drive read access and offline access are required. Please reconnect and grant access.",
+        );
+    }
+    const patch = tokenPatch(token);
+    const { data: completed, error: saveError } = await db.rpc(
+        "complete_google_drive_oauth",
+        {
+            p_state_hash: stateHash(state),
+            p_tokens: patch,
+        },
+    );
+    if (saveError) throw saveError;
+    if (!completed)
+        throw new GoogleDriveUserError(
+            "Google Drive authorization expired or was cancelled. Please connect again.",
+        );
     return { userId };
 }
 
@@ -212,41 +255,43 @@ function tokenSecretPatch(prefix: string, value?: string | null) {
     };
 }
 
-async function storeTokens(
-    userId: string,
-    token: Record<string, unknown>,
-    db: Db,
-) {
-    const accessToken = String(token.access_token);
-    const refreshToken =
-        typeof token.refresh_token === "string" ? token.refresh_token : null;
-    const expiresIn =
-        typeof token.expires_in === "number" ? token.expires_in : null;
+function hasDriveScope(scope: unknown): boolean {
+    return (
+        typeof scope === "string" &&
+        scope.split(/\s+/).includes(GOOGLE_DRIVE_SCOPE)
+    );
+}
 
-    // A refresh grant response has no refresh_token — keep the stored one.
-    const existing = refreshToken ? null : await loadTokenRow(userId, db);
-    const keptRefresh = existing
-        ? decryptString(
-              existing.encrypted_refresh_token,
-              existing.refresh_token_iv,
-              existing.refresh_token_tag,
-          )
-        : null;
-
-    const row = {
-        user_id: userId,
-        ...tokenSecretPatch("access_token", accessToken),
-        ...tokenSecretPatch("refresh_token", refreshToken ?? keptRefresh),
-        scope: typeof token.scope === "string" ? token.scope : GOOGLE_DRIVE_SCOPE,
-        expires_at: expiresIn
-            ? new Date(Date.now() + expiresIn * 1000).toISOString()
-            : null,
+function tokenPatch(token: Record<string, unknown>, existing?: TokenRow) {
+    if (
+        typeof token.access_token !== "string" ||
+        !token.access_token ||
+        typeof token.expires_in !== "number" ||
+        !Number.isFinite(token.expires_in) ||
+        token.expires_in <= 0
+    ) {
+        throw new Error("Invalid Google token response");
+    }
+    const scope = token.scope ?? existing?.scope;
+    if (!hasDriveScope(scope))
+        throw new GoogleDriveAuthRequiredError(
+            "Google Drive read permission is missing. Reconnect Google Drive.",
+        );
+    return {
+        ...tokenSecretPatch("access_token", token.access_token),
+        ...(typeof token.refresh_token === "string" && token.refresh_token
+            ? tokenSecretPatch("refresh_token", token.refresh_token)
+            : {
+                  encrypted_refresh_token: existing?.encrypted_refresh_token,
+                  refresh_token_iv: existing?.refresh_token_iv,
+                  refresh_token_tag: existing?.refresh_token_tag,
+              }),
+        scope,
+        expires_at: new Date(
+            Date.now() + token.expires_in * 1000,
+        ).toISOString(),
         updated_at: new Date().toISOString(),
     };
-    const { error } = await db
-        .from("user_google_drive_tokens")
-        .upsert(row, { onConflict: "user_id" });
-    if (error) throw error;
 }
 
 type TokenRow = {
@@ -307,9 +352,20 @@ export async function getGoogleDriveStatus(
     let row: TokenRow | null;
     try {
         row = await loadTokenRow(userId, db);
+        const { error } = await db
+            .from("google_drive_oauth_states")
+            .select("id")
+            .eq("user_id", userId)
+            .limit(1);
+        if (error) throw error;
     } catch (error) {
         if (isMissingTableError(error)) {
-            return { connected: false, scope: null, configured, schemaReady: false };
+            return {
+                connected: false,
+                scope: null,
+                configured,
+                schemaReady: false,
+            };
         }
         throw error;
     }
@@ -325,27 +381,52 @@ export async function disconnectGoogleDrive(
     userId: string,
     db: Db = createServerSupabase(),
 ): Promise<void> {
-    const row = await loadTokenRow(userId, db);
-    // Best-effort revocation so the grant disappears from the user's Google
-    // account page too, not just from our storage.
-    const refresh = row
-        ? decryptString(
-              row.encrypted_refresh_token,
-              row.refresh_token_iv,
-              row.refresh_token_tag,
-          )
-        : null;
-    if (refresh) {
-        await fetch(GOOGLE_REVOKE_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ token: refresh }),
-        }).catch(() => {});
+    // Delete local state first, atomically with pending OAuth attempts. Provider
+    // failure or corrupt ciphertext must never keep a local connection alive.
+    const { data, error } = await db.rpc("disconnect_google_drive", {
+        p_user_id: userId,
+    });
+    if (error) throw error;
+    const row = data as TokenRow | null;
+    try {
+        const token =
+            row &&
+            (decryptString(
+                row.encrypted_refresh_token,
+                row.refresh_token_iv,
+                row.refresh_token_tag,
+            ) ||
+                decryptString(
+                    row.encrypted_access_token,
+                    row.access_token_iv,
+                    row.access_token_tag,
+                ));
+        if (token)
+            await googleDriveRequest(GOOGLE_REVOKE_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                body: new URLSearchParams({ token }),
+            });
+    } catch (error) {
+        console.warn(
+            "[google-drive] remote revocation failed",
+            safeError(error),
+        );
     }
+}
+
+export async function cancelGoogleDriveOAuth(
+    userId: string,
+    state: string,
+    db: Db = createServerSupabase(),
+): Promise<void> {
     const { error } = await db
-        .from("user_google_drive_tokens")
+        .from("google_drive_oauth_states")
         .delete()
-        .eq("user_id", userId);
+        .eq("user_id", userId)
+        .eq("state_hash", stateHash(state));
     if (error) throw error;
 }
 
@@ -368,8 +449,9 @@ async function getAccessToken(userId: string, db: Db): Promise<string> {
         row.refresh_token_tag,
     );
     if (!refreshToken) {
-        if (accessToken) return accessToken; // No expiry info — try it.
-        throw new GoogleDriveAuthRequiredError();
+        throw new GoogleDriveAuthRequiredError(
+            "Google Drive access expired. Reconnect Google Drive.",
+        );
     }
 
     const env = googleDriveOAuthEnv();
@@ -378,7 +460,7 @@ async function getAccessToken(userId: string, db: Db): Promise<string> {
             "Google Drive OAuth client is not configured.",
         );
     }
-    const response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+    const response = await googleDriveRequest(GOOGLE_TOKEN_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -393,10 +475,12 @@ async function getAccessToken(userId: string, db: Db): Promise<string> {
         // A revoked/expired grant is unrecoverable — drop the row so the UI
         // honestly shows "not connected" instead of failing every call.
         if (token.error === "invalid_grant") {
-            await db
+            const { error } = await db
                 .from("user_google_drive_tokens")
                 .delete()
-                .eq("user_id", userId);
+                .eq("user_id", userId)
+                .eq("encrypted_refresh_token", row.encrypted_refresh_token);
+            if (error) throw error;
             throw new GoogleDriveAuthRequiredError(
                 "Google Drive access was revoked. Reconnect Google Drive.",
             );
@@ -405,7 +489,32 @@ async function getAccessToken(userId: string, db: Db): Promise<string> {
             `Google token refresh failed (HTTP ${response.status}).`,
         );
     }
-    await storeTokens(userId, token, db);
+    // Compare-and-set: refresh must not recreate a disconnected connection or
+    // overwrite a new grant from another tab / another Google account.
+    const { data: updated, error } = await db
+        .from("user_google_drive_tokens")
+        .update(tokenPatch(token, row))
+        .eq("user_id", userId)
+        .eq("encrypted_access_token", row.encrypted_access_token)
+        .select("user_id")
+        .maybeSingle();
+    if (error) throw error;
+    if (!updated) {
+        const current = await loadTokenRow(userId, db);
+        if (
+            current &&
+            Date.parse(current.expires_at ?? "") - Date.now() >
+                TOKEN_REFRESH_LEEWAY_MS
+        ) {
+            const access = decryptString(
+                current.encrypted_access_token,
+                current.access_token_iv,
+                current.access_token_tag,
+            );
+            if (access) return access;
+        }
+        throw new GoogleDriveAuthRequiredError();
+    }
     return String(token.access_token);
 }
 
@@ -420,24 +529,17 @@ async function driveFetch(
     token: string,
     path: string,
     params: Record<string, string>,
+    maxBytes?: number,
 ): Promise<Response> {
     const url = new URL(`${DRIVE_API}${path}`);
     for (const [key, value] of Object.entries(params)) {
         url.searchParams.set(key, value);
     }
-    return fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-}
-
-async function driveError(response: Response): Promise<string> {
-    try {
-        const body = (await response.json()) as {
-            error?: { message?: string };
-        };
-        if (body.error?.message) return body.error.message;
-    } catch {
-        /* non-JSON body */
-    }
-    return `Google Drive request failed (HTTP ${response.status}).`;
+    return googleDriveRequest(
+        url,
+        { headers: { Authorization: `Bearer ${token}` } },
+        maxBytes,
+    );
 }
 
 /** Escape a user string for embedding in a Drive `q` single-quoted literal. */
@@ -446,7 +548,10 @@ function escapeQuery(value: string): string {
 }
 
 function clampPageSize(value: unknown): number {
-    const n = typeof value === "number" ? Math.floor(value) : DEFAULT_PAGE_SIZE;
+    const n =
+        typeof value === "number" && Number.isFinite(value)
+            ? Math.floor(value)
+            : DEFAULT_PAGE_SIZE;
     return Math.min(Math.max(n, 1), MAX_PAGE_SIZE);
 }
 
@@ -472,7 +577,7 @@ async function searchFiles(
         includeItemsFromAllDrives: "true",
         supportsAllDrives: "true",
     });
-    if (!response.ok) throw new Error(await driveError(response));
+    if (!response.ok) throw googleDriveHttpError(response.status);
     const body = (await response.json()) as { files?: DriveFile[] };
     return body.files ?? [];
 }
@@ -489,7 +594,7 @@ async function listRecentFiles(
         includeItemsFromAllDrives: "true",
         supportsAllDrives: "true",
     });
-    if (!response.ok) throw new Error(await driveError(response));
+    if (!response.ok) throw googleDriveHttpError(response.status);
     const body = (await response.json()) as { files?: DriveFile[] };
     return body.files ?? [];
 }
@@ -517,48 +622,82 @@ async function readFileContent(
     text?: string;
     truncated?: boolean;
     unsupported?: string;
+    limitation?: string;
 }> {
-    const metaResponse = await driveFetch(token, `/files/${encodeURIComponent(fileId)}`, {
-        fields: FILE_FIELDS,
-        supportsAllDrives: "true",
-    });
-    if (!metaResponse.ok) throw new Error(await driveError(metaResponse));
+    const metaResponse = await driveFetch(
+        token,
+        `/files/${encodeURIComponent(fileId)}`,
+        {
+            fields: FILE_FIELDS,
+            supportsAllDrives: "true",
+        },
+    );
+    if (!metaResponse.ok) throw googleDriveHttpError(metaResponse.status);
     const file = (await metaResponse.json()) as DriveFile;
     const mimeType = file.mimeType ?? "";
 
-    if (EXPORT_MIME[mimeType]) {
-        const exportResponse = await driveFetch(
-            token,
-            `/files/${encodeURIComponent(fileId)}/export`,
-            { mimeType: EXPORT_MIME[mimeType] },
-        );
-        if (!exportResponse.ok) throw new Error(await driveError(exportResponse));
-        return { file, ...truncateText(await exportResponse.text()) };
-    }
-
+    const exportMime = EXPORT_MIME[mimeType];
     const isTextLike =
         mimeType.startsWith("text/") ||
         mimeType === "application/json" ||
         mimeType === "application/xml";
-    if (isTextLike || mimeType === "application/pdf" || mimeType === DOCX_MIME) {
-        const mediaResponse = await driveFetch(
-            token,
-            `/files/${encodeURIComponent(fileId)}`,
-            { alt: "media", supportsAllDrives: "true" },
+    if (
+        exportMime ||
+        isTextLike ||
+        mimeType === "application/pdf" ||
+        mimeType === DOCX_MIME
+    ) {
+        const limit = googleDriveLimits().downloadBytes;
+        if (!exportMime && Number(file.size) > limit) {
+            throw new GoogleDriveUserError(
+                `This Drive file exceeds this server's ${limit / 1024 / 1024} MiB download limit. Open it in Google Drive.`,
+            );
+        }
+        const url = new URL(
+            `${DRIVE_API}/files/${encodeURIComponent(fileId)}${exportMime ? "/export" : ""}`,
         );
-        if (!mediaResponse.ok) throw new Error(await driveError(mediaResponse));
-        if (isTextLike) {
-            return { file, ...truncateText(await mediaResponse.text()) };
+        if (exportMime) url.searchParams.set("mimeType", exportMime);
+        else {
+            url.searchParams.set("alt", "media");
+            url.searchParams.set("supportsAllDrives", "true");
         }
-        const buffer = await mediaResponse.arrayBuffer();
-        if (mimeType === "application/pdf") {
-            return { file, ...truncateText(await extractPdfText(buffer)) };
+        const download = await downloadGoogleDriveFile(url, token);
+        try {
+            let text: string;
+            if (exportMime || isTextLike) {
+                // Read only the bounded preview into memory; UTF-8 decoding
+                // preserves characters split between filesystem chunks.
+                text = "";
+                const stream = createReadStream(download.filename, {
+                    encoding: "utf8",
+                });
+                for await (const chunk of stream) {
+                    text += chunk;
+                    if (text.length > MAX_FILE_TEXT_CHARS) break;
+                }
+            } else {
+                text = await extractGoogleDriveBinary(
+                    download.filename,
+                    mimeType,
+                );
+                if (!text.trim())
+                    throw new GoogleDriveUserError(
+                        "No readable text was found in this Drive file. Scanned PDFs require OCR.",
+                    );
+            }
+            return {
+                file,
+                ...truncateText(text),
+                ...(mimeType === "application/vnd.google-apps.spreadsheet"
+                    ? {
+                          limitation:
+                              "Only the first worksheet is included. Other worksheets have not been read.",
+                      }
+                    : {}),
+            };
+        } finally {
+            await download.cleanup();
         }
-        const mammoth = await import("mammoth");
-        const result = await mammoth.extractRawText({
-            buffer: Buffer.from(buffer),
-        });
-        return { file, ...truncateText(result.value ?? "") };
     }
 
     return {
@@ -587,7 +726,8 @@ const GOOGLE_DRIVE_TOOLS = [
                 properties: {
                     query: {
                         type: "string",
-                        description: "Search term to match against file names and content.",
+                        description:
+                            "Search term to match against file names and content.",
                     },
                     max_results: {
                         type: "number",
@@ -602,7 +742,7 @@ const GOOGLE_DRIVE_TOOLS = [
         type: "function" as const,
         function: {
             name: "google_drive_read_file",
-            description: `Read a Google Drive file's text content by file_id (from google_drive_search or google_drive_list_recent). Google Docs/Sheets/Slides are exported as text; PDF and Word documents are converted to text.\n\n${UNTRUSTED_NOTE}`,
+            description: `Read a Google Drive file's text content by file_id (from google_drive_search or google_drive_list_recent). Google Docs and Slides are exported as text; Google Sheets includes ONLY the first worksheet (CSV). PDF and Word documents are converted to text. Downloads follow server-configured size and time limits; returned text is limited to 60,000 characters; check truncated/limitation fields before claiming complete coverage.\n\n${UNTRUSTED_NOTE}`,
             parameters: {
                 type: "object",
                 properties: {
@@ -646,7 +786,7 @@ export async function buildGoogleDriveTools(
     } catch (error) {
         console.error("[google-drive] failed to load token row", {
             userId,
-            error: error instanceof Error ? error.message : String(error),
+            error: safeError(error),
         });
         return [];
     }
@@ -680,30 +820,39 @@ export async function executeGoogleDriveToolCall(
         const token = await getAccessToken(userId, db);
         let payload: unknown;
         if (toolName === "google_drive_search") {
-            const query = typeof args.query === "string" ? args.query.trim() : "";
-            if (!query) throw new Error("query is required.");
-            payload = { files: await searchFiles(token, query, args.max_results) };
+            const query =
+                typeof args.query === "string" ? args.query.trim() : "";
+            if (!query) throw new GoogleDriveUserError("query is required.");
+            payload = {
+                files: await searchFiles(token, query, args.max_results),
+            };
         } else if (toolName === "google_drive_list_recent") {
             payload = { files: await listRecentFiles(token, args.max_results) };
         } else if (toolName === "google_drive_read_file") {
             const fileId =
                 typeof args.file_id === "string" ? args.file_id.trim() : "";
-            if (!fileId) throw new Error("file_id is required.");
+            if (!fileId) throw new GoogleDriveUserError("file_id is required.");
             payload = await readFileContent(token, fileId);
         } else {
             throw new Error(`Unknown Google Drive tool: ${toolName}`);
         }
         return {
-            content: JSON.stringify({ ok: true, note: UNTRUSTED_NOTE, ...(payload as object) }),
+            content: JSON.stringify({
+                ok: true,
+                note: UNTRUSTED_NOTE,
+                ...(payload as object),
+            }),
             event: driveEvent(toolName, "ok"),
         };
     } catch (error) {
         const message =
-            error instanceof Error ? error.message : "Google Drive call failed.";
+            error instanceof GoogleDriveUserError
+                ? error.message
+                : "Google Drive call failed. Please try again.";
         console.error("[google-drive] tool call failed", {
             userId,
             toolName,
-            error: message,
+            error: safeError(error),
         });
         return {
             content: JSON.stringify({ ok: false, error: message }),

@@ -1,10 +1,18 @@
-import { completeGoogleDriveOAuth, disconnectGoogleDrive, getGoogleDriveStatus, startGoogleDriveOAuth } from "../../lib/integrations/googleDrive";
-import { ConnectorSetupError } from "../../lib/mcp/errors";
 // HTTP layer for the user module. Handlers parse params/query/body, call the
 // service functions behind user.service.ts, and map their typed results onto
 // status codes, headers, and JSON bodies. The MFA step-up guard
 // (requireMfaIfEnrolled) is applied here, per route — keep it on every
 // mutating /user route so the service layer never has to know about MFA.
+
+import { safeError } from "../../lib/safeError";
+import {
+    cancelGoogleDriveOAuth,
+    completeGoogleDriveOAuth,
+    disconnectGoogleDrive,
+    getGoogleDriveStatus,
+    startGoogleDriveOAuth,
+} from "../../lib/integrations/googleDrive";
+import { ConnectorSetupError } from "../../lib/mcp/errors";
 
 import crypto from "crypto";
 import { Router } from "express";
@@ -584,11 +592,14 @@ userRouter.get("/integrations/google-drive", requireAuth, async (req, res) => {
         } catch {
             redirectUri = null;
         }
-        res.json({ ...(await getGoogleDriveStatus(userId)), redirectUri });
+        res.json({
+            ...(await getGoogleDriveStatus(userId, createServerSupabase())),
+            redirectUri,
+        });
     } catch (err) {
         console.error("[google-drive] status failed", {
             userId,
-            error: errorMessage(err),
+            error: safeError(err),
         });
         res.status(500).json({ detail: "Failed to load Google Drive status." });
     }
@@ -603,13 +614,16 @@ userRouter.post(
         const userId = res.locals.userId as string;
         try {
             const redirectUri = `${backendPublicUrl(req)}/user/integrations/google-drive/oauth/callback`;
-            const result = await startGoogleDriveOAuth(userId, redirectUri);
+            const result = await startGoogleDriveOAuth(
+                userId,
+                redirectUri,
+                createServerSupabase(),
+            );
             res.json(result);
         } catch (err) {
-            const detail = errorMessage(err);
             console.error("[google-drive] oauth start failed", {
                 userId,
-                error: detail,
+                error: safeError(err),
             });
             // Same allowlist as the MCP start route: only the repo-authored
             // setup instructions reach the browser verbatim. A DB or crypto
@@ -640,7 +654,7 @@ userRouter.get(
             if (error) throw new Error(error);
             if (!state || !code)
                 throw new Error("OAuth callback is missing state or code.");
-            await completeGoogleDriveOAuth(state, code);
+            await completeGoogleDriveOAuth(state, code, createServerSupabase());
             res.set("Content-Security-Policy", mcpOAuthPopupCsp(nonce))
                 .type("html")
                 .send(
@@ -650,15 +664,22 @@ userRouter.get(
                     ),
                 );
         } catch (err) {
-            const detail = errorMessage(err);
             console.error("[google-drive] oauth callback failed", {
-                error: detail,
+                error: safeError(err),
                 hasCode: !!code,
             });
             res.status(400)
                 .set("Content-Security-Policy", mcpOAuthPopupCsp(nonce))
                 .type("html")
-                .send(mcpOAuthPopupHtml({ success: false, detail }, nonce));
+                .send(
+                    mcpOAuthPopupHtml(
+                        {
+                            success: false,
+                            detail: "Google Drive authorization could not be completed. Return to Mike and try again.",
+                        },
+                        nonce,
+                    ),
+                );
         }
     },
 );
@@ -671,16 +692,51 @@ userRouter.delete(
     async (_req, res) => {
         const userId = res.locals.userId as string;
         try {
-            await disconnectGoogleDrive(userId);
+            await disconnectGoogleDrive(userId, createServerSupabase());
             res.status(204).end();
         } catch (err) {
             console.error("[google-drive] disconnect failed", {
                 userId,
-                error: errorMessage(err),
+                error: safeError(err),
             });
-            res.status(500).json({ detail: "Failed to disconnect Google Drive." });
+            res.status(500).json({
+                detail: "Failed to disconnect Google Drive.",
+            });
         }
     },
+);
+
+// Cancel only this user's pending attempt; never disconnect an existing grant.
+userRouter.post(
+    "/integrations/google-drive/oauth/cancel",
+    requireAuth,
+    requireMfaIfEnrolled,
+    asyncRoute(async (req, res) => {
+        const state = req.body?.state;
+        if (typeof state !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(state)) {
+            return void res
+                .status(400)
+                .json({
+                    detail: "Invalid Google Drive authorization attempt.",
+                });
+        }
+        try {
+            await cancelGoogleDriveOAuth(
+                res.locals.userId as string,
+                state,
+                createServerSupabase(),
+            );
+            res.status(204).end();
+        } catch (error) {
+            console.error(
+                "[google-drive] cancellation failed",
+                safeError(error),
+            );
+            res.status(500).json({
+                detail: "Google Drive authorization could not be cancelled. Close the Google window and try again.",
+            });
+        }
+    }),
 );
 
 // POST /user/mcp-connectors/:connectorId/refresh-tools

@@ -1066,6 +1066,14 @@ export async function startGoogleDriveOAuth(): Promise<{
     );
 }
 
+export async function cancelGoogleDriveOAuth(state: string): Promise<void> {
+    await apiRequest("/user/integrations/google-drive/oauth/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state }),
+    });
+}
+
 export async function disconnectGoogleDrive(): Promise<void> {
     return apiRequest<void>("/user/integrations/google-drive", {
         method: "DELETE",

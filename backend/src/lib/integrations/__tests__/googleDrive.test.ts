@@ -10,54 +10,8 @@ import { ConnectorSetupError } from "../../mcp/errors";
 import { encryptString } from "../../mcp/client";
 import type { Db } from "../../mcp/types";
 
-/**
- * A minimal configurable Supabase stub: routes per-table responses and
- * records writes. Only the chains the module uses are implemented.
- */
-function makeDb(options: {
-    tokenRow?: Record<string, unknown> | null;
-    onInsert?: (table: string, row: Record<string, unknown>) => void;
-    onDelete?: (table: string) => void;
-}): Db {
-    return {
-        from(table: string) {
-            return {
-                select() {
-                    return {
-                        eq() {
-                            return {
-                                maybeSingle: () =>
-                                    Promise.resolve({
-                                        data:
-                                            table === "user_google_drive_tokens"
-                                                ? (options.tokenRow ?? null)
-                                                : null,
-                                        error: null,
-                                    }),
-                            };
-                        },
-                    };
-                },
-                insert(row: Record<string, unknown>) {
-                    options.onInsert?.(table, row);
-                    return Promise.resolve({ error: null });
-                },
-                upsert(row: Record<string, unknown>) {
-                    options.onInsert?.(table, row);
-                    return Promise.resolve({ error: null });
-                },
-                delete() {
-                    return {
-                        eq() {
-                            options.onDelete?.(table);
-                            return Promise.resolve({ error: null });
-                        },
-                    };
-                },
-            };
-        },
-    } as unknown as Db;
-}
+import { driveDb } from "./googleDriveDb";
+const makeDb = (options: Parameters<typeof driveDb>[0]) => driveDb(options).db;
 
 function encryptedTokenRow(overrides: Partial<Record<string, unknown>> = {}) {
     const access = encryptString("access-token-1");
@@ -206,7 +160,11 @@ describe("getGoogleDriveStatus", () => {
                                     maybeSingle: () =>
                                         Promise.resolve({
                                             data: null,
-                                            error: { code: "57P01", message: "terminating connection" },
+                                            error: {
+                                                code: "57P01",
+                                                message:
+                                                    "terminating connection",
+                                            },
                                         }),
                                 };
                             },
@@ -263,7 +221,13 @@ describe("executeGoogleDriveToolCall", () => {
             expect(q).toContain("trashed = false");
             return new Response(
                 JSON.stringify({
-                    files: [{ id: "f1", name: "I485.pdf", mimeType: "application/pdf" }],
+                    files: [
+                        {
+                            id: "f1",
+                            name: "I485.pdf",
+                            mimeType: "application/pdf",
+                        },
+                    ],
                 }),
                 { status: 200 },
             );
@@ -323,10 +287,11 @@ describe("executeGoogleDriveToolCall", () => {
         });
         vi.stubGlobal(
             "fetch",
-            vi.fn(async () =>
-                new Response(JSON.stringify({ error: "invalid_grant" }), {
-                    status: 400,
-                }),
+            vi.fn(
+                async () =>
+                    new Response(JSON.stringify({ error: "invalid_grant" }), {
+                        status: 400,
+                    }),
             ),
         );
         const { content, event } = await executeGoogleDriveToolCall(
