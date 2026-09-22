@@ -478,6 +478,7 @@ export async function runToolCalls(
           tool_name: event.tool_name,
           status: event.status,
           error: event.error,
+          google_action_id: event.google_action_id,
         })}\n\n`,
       );
       continue;

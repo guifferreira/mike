@@ -64,8 +64,11 @@ it("dispatches a read and a proposal through the real chat tool loop, but never 
   expect(store.tables.google_workspace_actions).toHaveLength(1);
   expect(store.tables.google_workspace_actions[0].status).toBe("pending");
   expect(result.mcpEvents.map((e) => e.status)).toEqual(["ok", "ok", "error"]);
-  expect(JSON.stringify(result.toolResults)).toContain("awaiting_approval");
-  expect(write.mock.calls.map((c) => c[0]).join("")).toContain(
-    "mcp_tool_result",
+  expect(result.mcpEvents[1].google_action_id).toBe(
+    store.tables.google_workspace_actions[0].id,
   );
+  expect(JSON.stringify(result.toolResults)).toContain("awaiting_approval");
+  const stream = write.mock.calls.map((c) => c[0]).join("");
+  expect(stream).toContain("mcp_tool_result");
+  expect(stream).toContain(String(store.tables.google_workspace_actions[0].id));
 });

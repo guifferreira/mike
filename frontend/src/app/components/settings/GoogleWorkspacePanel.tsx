@@ -16,52 +16,13 @@ import {
 } from "@/app/lib/mikeApi";
 import { userFacingApiError } from "@/app/lib/userFacingError";
 import { MfaVerificationPopup } from "@/app/components/popups/MfaVerificationPopup";
+import {
+  GoogleWorkspaceActionCard,
+} from "@/app/components/shared/GoogleWorkspaceActionCard";
 import { SettingsCard } from "./SettingsCard";
 import { PillButtonUI } from "@/shared/ui/PillButtonUI";
 
 const names = { gmail: "Gmail", "google-calendar": "Google Calendar" };
-const actionNames: Record<string, string> = {
-  gmail_propose_send: "Send email",
-  gmail_propose_save_draft: "Save draft",
-  gmail_propose_delete_draft: "Delete draft",
-  gmail_propose_modify: "Change email labels",
-  gmail_propose_trash: "Move email to Trash",
-  google_calendar_propose_create: "Create event",
-  google_calendar_propose_update: "Edit event",
-  google_calendar_propose_delete: "Delete event",
-};
-const labels: Record<string, string> = {
-  to: "To",
-  cc: "Cc",
-  bcc: "Bcc",
-  subject: "Subject",
-  body: "Message",
-  calendar_id: "Calendar",
-  event_id: "Event",
-  draft_id: "Draft",
-  message_id: "Message",
-  summary: "Title",
-  description: "Description",
-  location: "Location",
-  start: "Start",
-  end: "End (exclusive for all-day events)",
-  attendees: "Attendees",
-  add_label_ids: "Add labels",
-  remove_label_ids: "Remove labels",
-  date: "Date",
-  dateTime: "Date and time",
-  timeZone: "Time zone",
-  email: "Email",
-};
-function display(value: unknown): string {
-  if (Array.isArray(value)) return value.map(display).join("\n");
-  if (value && typeof value === "object")
-    return Object.entries(value)
-      .filter(([, v]) => v !== undefined && v !== null)
-      .map(([key, v]) => `${labels[key] ?? key}: ${display(v)}`)
-      .join("\n");
-  return String(value ?? "");
-}
 class FlowError extends Error {}
 type Sensitive = (
   action: () => Promise<void>,
@@ -368,15 +329,15 @@ export function GoogleWorkspacePanel() {
           className="space-y-3 p-4"
         >
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium">Review Google actions</h3>
+            <h3 className="text-sm font-medium">Recent Google actions</h3>
             <PillButtonUI tone="white" onClick={() => void refresh()}>
               Refresh proposals
             </PillButtonUI>
           </div>
           <p className="text-xs text-muted-foreground">
-            The assistant can prepare changes, but nothing is sent or changed
-            until you approve the exact action here. Proposals expire after 10
-            minutes. Review all recipients and contents.
+            Approval is shown in the Assistant conversation where you requested
+            the action. This history is available if you need to recover a
+            pending proposal. Proposals expire after 10 minutes.
           </p>
           {actions === null ? (
             <p role="status" className="text-sm">
@@ -388,90 +349,12 @@ export function GoogleWorkspacePanel() {
             </p>
           ) : (
             actions.map((action) => (
-              <article
+              <GoogleWorkspaceActionCard
                 key={action.id}
-                className="space-y-3 rounded-lg bg-app-surface p-3"
-              >
-                <h4 className="text-sm font-medium">
-                  {actionNames[action.proposal.tool] ?? "Google action"}
-                </h4>
-                <p className="text-xs">
-                  Account: {action.proposal.accountEmail}
-                </p>
-                <p className="text-xs">
-                  Status: {action.status}
-                  {action.status === "pending"
-                    ? ` · Expires ${new Date(action.expiresAt).toLocaleTimeString()}`
-                    : ""}
-                </p>
-                {action.provider === "google-calendar" && (
-                  <p className="text-sm">
-                    Google will notify attendees of this change. Deleting an
-                    event sends cancellation notices.
-                  </p>
-                )}
-                {action.proposal.tool === "gmail_propose_delete_draft" && (
-                  <p className="text-sm">
-                    This deletes the draft. Review its contents before
-                    approving.
-                  </p>
-                )}
-                <dl className="space-y-2 text-sm">
-                  {Object.entries(action.proposal.args).map(([k, v]) => (
-                    <div key={k}>
-                      <dt className="font-medium">{labels[k] ?? k}</dt>
-                      <dd className="whitespace-pre-wrap break-words">
-                        {display(v)}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
-                {action.proposal.before !== undefined && (
-                  <details>
-                    <summary className="text-sm cursor-pointer">
-                      Current item before this change
-                    </summary>
-                    <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">
-                      {display(action.proposal.before)}
-                    </pre>
-                  </details>
-                )}
-                {action.resultMessage && (
-                  <p className="text-sm" role="status">
-                    {action.resultMessage}
-                  </p>
-                )}
-                {action.status === "executing" && (
-                  <p className="text-xs">
-                    Execution has started. If this status persists, check Google
-                    before requesting another action; Mike will not run this
-                    approval again.
-                  </p>
-                )}
-                {action.status === "pending" && (
-                  <div className="flex gap-2">
-                    <PillButtonUI
-                      tone="blue"
-                      disabled={
-                        busy !== null ||
-                        Date.parse(action.expiresAt) <= Date.now()
-                      }
-                      onClick={() => void decide(action.id, "approve")}
-                    >
-                      Approve{" "}
-                      {actionNames[action.proposal.tool]?.toLowerCase() ??
-                        "action"}
-                    </PillButtonUI>
-                    <PillButtonUI
-                      tone="white"
-                      disabled={busy !== null}
-                      onClick={() => void decide(action.id, "reject")}
-                    >
-                      Reject
-                    </PillButtonUI>
-                  </div>
-                )}
-              </article>
+                action={action}
+                busy={busy !== null}
+                onDecision={(decision) => void decide(action.id, decision)}
+              />
             ))
           )}
           {error && (

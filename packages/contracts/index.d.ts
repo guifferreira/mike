@@ -241,6 +241,8 @@ export type McpToolEvent = {
   openai_tool_name: string;
   status: "ok" | "error";
   error?: string;
+  /** Server-owned Google proposal rendered for approval in the assistant flow. */
+  google_action_id?: string;
 };
 
 export type AssistantEvent =
