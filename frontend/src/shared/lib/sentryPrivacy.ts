@@ -58,7 +58,7 @@ function codePath(value: unknown): string | undefined {
 function tagsFor(value: unknown): RecordValue {
   const out: RecordValue = {};
   for (const [key, entry] of Object.entries(record(value))) {
-    if (typeof entry === 'string' && ENUMS[key]?.has(entry)) out[key] = entry;
+    if (typeof entry === 'string' && Object.hasOwn(ENUMS, key) && ENUMS[key]!.has(entry)) out[key] = entry;
     else if (ID_KEYS.has(key) && typeof entry === 'string' && UUID.test(entry)) out[key] = entry;
     else if (key === 'office_version' && typeof entry === 'string' && /^\d+(?:\.\d+){1,4}$/.test(entry) && entry.length < 30) out[key] = entry;
     else if (key === 'http_route' && typeof entry === 'string') out[key] = diagnosticRoute(entry);

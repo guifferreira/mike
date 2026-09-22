@@ -11,7 +11,6 @@ import {
     redactText,
     MIKE_SENTRY_DSN,
     installKind,
-    minimiseForCommunity,
     redactFilesystemPaths,
     repoRelativePath,
     resolveDsn,

@@ -63,13 +63,13 @@ available on the process path.
 
 ## Sentry receives no events
 
-- The backend logs `[sentry] enabled for api` at boot when `SENTRY_DSN` is
-  set and `[sentry] disabled` otherwise. If it says disabled inside Docker,
-  the variable is not reaching the container: put it in `backend/.env` or the
-  compose-root `.env`, never in the compose `environment:` block.
-- The browser bundle only reports if `NEXT_PUBLIC_SENTRY_DSN` was set when
-  `next build` ran (`FRONTEND_SENTRY_DSN` for the compose image). Rebuild after
-  changing it.
+- The backend logs `[sentry] enabled for api` at boot when reporting is active.
+  An unset custom `SENTRY_DSN` uses Mike's built-in community DSN; only
+  `SENTRY_DISABLED=true` (or the automatic test-process guard) disables it.
+- The browser bundle also uses the built-in DSN when no custom
+  `NEXT_PUBLIC_SENTRY_DSN` is set. Only `NEXT_PUBLIC_SENTRY_DISABLED=true`
+  disables reporting. Rebuild after changing either build-time value
+  (`FRONTEND_SENTRY_DSN` / `FRONTEND_SENTRY_DISABLED` for the compose image).
 - Prove the pipeline with `SENTRY_ENABLE_TEST_ROUTE=true` and
   `curl -i http://localhost:3001/observability/sentry-test`, or run the local
   sink in `scripts/sentry-sink.mjs`. Details in [observability.md](observability.md).

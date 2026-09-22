@@ -57,6 +57,10 @@ describe('outbound telemetry privacy boundary', () => {
     expect(diagnosticEvent({ tags: { office_host: 'Word', office_platform: 'Mac', office_version: '16.0.123', job_kind: 'extraction.extract' } }).tags).toEqual({ office_host: 'Word', office_platform: 'Mac', office_version: '16.0.123', job_kind: 'extraction.extract' });
   });
 
+  it('ignores tag names inherited from Object.prototype', () => {
+    expect(diagnosticEvent({ tags: { constructor: 'constructor', toString: 'toString' } }).tags).toEqual({});
+  });
+
   it.each(['session', 'sessions', 'client_report', 'transaction', 'attachment', 'replay_event', 'replay_recording', 'log', 'span', 'metric', 'profile', 'feedback', 'future_item'])('rejects %s items before network serialization', type => {
     expect(diagnosticEnvelope([{ trace: { transaction: 'Private.pdf' } }, [[{ type, filename: 'Private.pdf' }, { did: 'private-user' }]]])).toBeNull();
   });

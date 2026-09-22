@@ -13,18 +13,105 @@
 // the SDK posts to (/api/<project>/envelope/). No dependencies: Node 22 only.
 
 import http from "node:http";
-import { gunzipSync, inflateSync } from "node:zlib";
+import { createGunzip, createInflate } from "node:zlib";
 
 const port = Number.parseInt(process.env.PORT ?? "9999", 10);
 const events = [];
 const MAX_EVENTS = 500;
+const MAX_REQUEST_BYTES = 1024 * 1024;
+const MAX_DECOMPRESSED_BYTES = 5 * 1024 * 1024;
+const ALLOWED_ORIGINS = new Set([
+  `http://localhost:${port}`,
+  `http://127.0.0.1:${port}`,
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:3100",
+  "http://127.0.0.1:3100",
+  "https://localhost:3200",
+  "https://127.0.0.1:3200",
+]);
 
-function decodeBody(req, chunks) {
-  const raw = Buffer.concat(chunks);
+class PayloadTooLargeError extends Error {}
+
+/** Collect a bounded request body while continuing to drain oversized uploads. */
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    const declaredLength = Number(req.headers["content-length"]);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
+      req.resume();
+      reject(new PayloadTooLargeError("compressed request body is too large"));
+      return;
+    }
+
+    const chunks = [];
+    let received = 0;
+    let oversized = false;
+    req.on("data", (chunk) => {
+      if (oversized) return;
+      received += chunk.length;
+      if (received > MAX_REQUEST_BYTES) {
+        oversized = true;
+        chunks.length = 0;
+        reject(new PayloadTooLargeError("compressed request body is too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.once("end", () => resolve(Buffer.concat(chunks)));
+    req.once("error", reject);
+    req.once("aborted", () => reject(new Error("request aborted")));
+  });
+}
+
+/** Decompress without blocking the event loop or retaining oversized output. */
+function decompress(raw, encoding) {
+  return new Promise((resolve, reject) => {
+    const decoder = encoding === "gzip" ? createGunzip() : createInflate();
+    const chunks = [];
+    let decoded = 0;
+    let settled = false;
+
+    decoder.on("data", (chunk) => {
+      if (settled) return;
+      decoded += chunk.length;
+      if (decoded > MAX_DECOMPRESSED_BYTES) {
+        settled = true;
+        decoder.destroy();
+        reject(new PayloadTooLargeError("decompressed request body is too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    decoder.once("end", () => {
+      if (!settled) resolve(Buffer.concat(chunks));
+    });
+    decoder.once("error", (error) => {
+      if (!settled) reject(error);
+    });
+    decoder.end(raw);
+  });
+}
+
+/** Decode an uncompressed, gzip, or deflate request after enforcing both limits. */
+async function decodeBody(req) {
+  const raw = await readRequestBody(req);
   const encoding = req.headers["content-encoding"];
-  if (encoding === "gzip") return gunzipSync(raw).toString("utf8");
-  if (encoding === "deflate") return inflateSync(raw).toString("utf8");
+  if (encoding === "gzip" || encoding === "deflate") {
+    return (await decompress(raw, encoding)).toString("utf8");
+  }
   return raw.toString("utf8");
+}
+
+/** Permit browser access only from the sink itself and Mike's local app origins. */
+function corsHeaders(req) {
+  const origin = req.headers.origin;
+  if (typeof origin !== "string" || !ALLOWED_ORIGINS.has(origin)) return {};
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-headers": "content-type, x-sentry-auth, sentry-trace, baggage",
+    "access-control-allow-methods": "POST, GET, DELETE, OPTIONS",
+    vary: "Origin",
+  };
 }
 
 /** Sentry envelopes are newline-delimited JSON: header, then (item header, item payload) pairs. */
@@ -105,24 +192,26 @@ async function refresh(){
   const events = await (await fetch('/events')).json();
   document.getElementById('count').textContent = events.length;
   document.getElementById('list').innerHTML = events.map(e => {
-    const tags = Object.entries(e.tags).map(([k,v]) => '<span class="tag">'+k+'='+v+'</span>').join('');
-    return '<div class="event '+e.level+'"><div class="title">'+esc(e.title)+'</div>'+
-      '<div class="meta">'+e.received_at+' · project '+e.project+' · '+e.level+' · '+(e.platform||'')+' · '+(e.environment||'')+(e.where?' · '+esc(e.where):'')+(e.request?' · '+e.request.method+' '+esc(e.request.url):'')+(e.user?' · user '+esc(JSON.stringify(e.user)):'')+'</div>'+
+    const tags = Object.entries(e.tags).map(([k,v]) => '<span class="tag">'+esc(k)+'='+esc(v)+'</span>').join('');
+    return '<div class="event '+esc(e.level)+'"><div class="title">'+esc(e.title)+'</div>'+
+      '<div class="meta">'+esc(e.received_at)+' · project '+esc(e.project)+' · '+esc(e.level)+' · '+esc(e.platform||'')+' · '+esc(e.environment||'')+(e.where?' · '+esc(e.where):'')+(e.request?' · '+esc(e.request.method)+' '+esc(e.request.url):'')+(e.user?' · user '+esc(JSON.stringify(e.user)):'')+'</div>'+
       '<div class="tags">'+tags+'</div>'+
       '<details><summary>raw event</summary><pre>'+esc(JSON.stringify(e.raw,null,2))+'</pre></details></div>';
   }).join('');
 }
-function esc(s){return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function esc(s){return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 refresh(); setInterval(refresh, 2000);
 </script>`;
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://sink.local");
-  const cors = {
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "*",
-    "access-control-allow-methods": "POST, GET, OPTIONS",
-  };
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && !ALLOWED_ORIGINS.has(origin)) {
+    res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Origin not allowed");
+    return;
+  }
+  const cors = corsHeaders(req);
   if (req.method === "OPTIONS") {
     res.writeHead(204, cors).end();
     return;
@@ -144,12 +233,10 @@ const server = http.createServer((req, res) => {
   }
   const ingest = url.pathname.match(/^\/api\/(\d+)\/(envelope|store)\/?$/);
   if (req.method === "POST" && ingest) {
-    const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => {
+    void (async () => {
       const project = ingest[1];
       try {
-        const text = decodeBody(req, chunks);
+        const text = await decodeBody(req);
         if (ingest[2] === "store") {
           record(project, JSON.parse(text));
         } else {
@@ -158,17 +245,22 @@ const server = http.createServer((req, res) => {
           }
         }
       } catch (error) {
+        if (error instanceof PayloadTooLargeError) {
+          res.writeHead(413, { ...cors, "content-type": "application/json" });
+          res.end('{"error":"payload too large"}');
+          return;
+        }
         console.error("[sink] could not parse envelope", error);
       }
       res.writeHead(200, { ...cors, "content-type": "application/json" });
       res.end("{}");
-    });
+    })();
     return;
   }
   res.writeHead(404, cors).end();
 });
 
-server.listen(port, () => {
+server.listen(port, "127.0.0.1", () => {
   console.log(`Sentry sink listening on http://localhost:${port}`);
   console.log(`  DSN for any Mike runtime: http://mike@localhost:${port}/1`);
   console.log(`  Events page:               http://localhost:${port}/`);
