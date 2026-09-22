@@ -1,3 +1,4 @@
+import { getGoogleWorkspaceStatus, startGoogleWorkspaceOAuth, cancelGoogleWorkspaceOAuth, disconnectGoogleWorkspace, listGoogleWorkspaceActions, decideGoogleWorkspaceAction } from "./mikeApi";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantEvent, Chat } from "@/app/components/shared/types";
 
@@ -2146,6 +2147,14 @@ describe("thin endpoint wrappers", () => {
             url: "/user/integrations/google-drive",
             method: "DELETE",
         },
+        { name: "getGoogleWorkspaceStatus", call: () => getGoogleWorkspaceStatus("gmail"), url: "/user/integrations/gmail" },
+        { name: "startGoogleWorkspaceOAuth", call: () => startGoogleWorkspaceOAuth("gmail"), url: "/user/integrations/gmail/oauth/start", method: "POST", body: { write: false } },
+        { name: "upgradeGoogleWorkspaceOAuth", call: () => startGoogleWorkspaceOAuth("google-calendar", true), url: "/user/integrations/google-calendar/oauth/start", method: "POST", body: { write: true } },
+        { name: "cancelGoogleWorkspaceOAuth", call: () => cancelGoogleWorkspaceOAuth("gmail", "state"), url: "/user/integrations/gmail/oauth/cancel", method: "POST", body: { state: "state" } },
+        { name: "disconnectGoogleWorkspace", call: () => disconnectGoogleWorkspace("gmail"), url: "/user/integrations/gmail", method: "DELETE" },
+        { name: "listGoogleWorkspaceActions", call: () => listGoogleWorkspaceActions(), url: "/user/google-actions" },
+        { name: "approveGoogleWorkspaceAction", call: () => decideGoogleWorkspaceAction("a1", "approve"), url: "/user/google-actions/a1/approve", method: "POST" },
+        { name: "rejectGoogleWorkspaceAction", call: () => decideGoogleWorkspaceAction("a1", "reject"), url: "/user/google-actions/a1/reject", method: "POST" },
         // Projects
         {
             name: "getProject",

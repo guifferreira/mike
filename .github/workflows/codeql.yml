@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'codex/**']
   schedule:
     # Mondays 04:30 UTC.
     - cron: "30 4 * * 1"

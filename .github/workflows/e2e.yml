@@ -27,7 +27,7 @@ on:
   pull_request:
     # `main` is the destination upstream; `upstream-main` is the fork's mirror of
     # it, so the suite is exercised on the fork PR and stays correct once merged.
-    branches: [main, upstream-main]
+    branches: [main, upstream-main, 'codex/**']
   # Nightly run against the default branch, so drift that lands BETWEEN pull
   # requests (a dependency bump, a Supabase CLI change, an upstream UI tweak
   # breaking a selector) is caught within a day instead of surfacing on the next

@@ -1,3 +1,7 @@
+import {
+  isGoogleWorkspaceTool,
+  executeGoogleWorkspaceToolCall,
+} from "../../../../lib/integrations/googleWorkspace";
 import { createDocumentVersions } from "../../../documents/documents.service";
 import {
   getCourtlistenerCases,
@@ -439,8 +443,11 @@ export async function runToolCalls(
       /* ignore */
     }
 
-    if (tc.function.name.startsWith(GOOGLE_DRIVE_TOOL_PREFIX)) {
-      // Native Drive tools reuse the MCP event surface so the UI renders
+    if (
+      tc.function.name.startsWith(GOOGLE_DRIVE_TOOL_PREFIX) ||
+      isGoogleWorkspaceTool(tc.function.name)
+    ) {
+      // Native Google tools reuse the MCP event surface so the UI renders
       // them with the existing connector treatment.
       write(
         `data: ${JSON.stringify({
@@ -448,7 +455,10 @@ export async function runToolCalls(
           name: tc.function.name,
         })}\n\n`,
       );
-      const { content, event } = await executeGoogleDriveToolCall(
+      const executeGoogleTool = isGoogleWorkspaceTool(tc.function.name)
+        ? executeGoogleWorkspaceToolCall
+        : executeGoogleDriveToolCall;
+      const { content, event } = await executeGoogleTool(
         userId,
         tc.function.name,
         args,

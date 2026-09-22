@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
+import { GoogleWorkspacePanel } from "@/app/components/settings/GoogleWorkspacePanel";
 import { NewCustomMcpModal } from "@/app/components/settings/NewCustomMcpModal";
 import type { McpConnectorFormDraft } from "@/app/components/settings/McpConnectorForm";
 import {
@@ -1294,6 +1295,8 @@ export default function ConnectorsPage() {
           handleRef={googleDriveHandleRef}
         />
       </div>
+
+      <GoogleWorkspacePanel />
 
       <div className="grid gap-3 sm:grid-cols-2">
         {!loading &&

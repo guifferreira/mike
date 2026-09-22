@@ -3040,3 +3040,55 @@ export async function deleteWorkflowAsset(
         method: "DELETE",
     });
 }
+
+export async function getGoogleWorkspaceStatus(
+    provider: import("@mike/contracts").GoogleWorkspaceProvider,
+) {
+    return apiRequest<import("@mike/contracts").GoogleWorkspaceStatus>(
+        `/user/integrations/${provider}`,
+    );
+}
+export async function startGoogleWorkspaceOAuth(
+    provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    write = false,
+) {
+    return apiRequest<{ authorizationUrl: string }>(
+        `/user/integrations/${provider}/oauth/start`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ write }),
+        },
+    );
+}
+export async function cancelGoogleWorkspaceOAuth(
+    provider: import("@mike/contracts").GoogleWorkspaceProvider,
+    state: string,
+) {
+    return apiRequest<void>(`/user/integrations/${provider}/oauth/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state }),
+    });
+}
+export async function disconnectGoogleWorkspace(
+    provider: import("@mike/contracts").GoogleWorkspaceProvider,
+) {
+    return apiRequest<void>(`/user/integrations/${provider}`, {
+        method: "DELETE",
+    });
+}
+export async function listGoogleWorkspaceActions() {
+    return apiRequest<{
+        actions: import("@mike/contracts").GoogleWorkspaceActionReview[];
+    }>("/user/google-actions");
+}
+export async function decideGoogleWorkspaceAction(
+    id: string,
+    decision: "approve" | "reject",
+) {
+    return apiRequest<{ status: string; message: string } | undefined>(
+        `/user/google-actions/${encodeURIComponent(id)}/${decision}`,
+        { method: "POST" },
+    );
+}

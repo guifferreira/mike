@@ -33,7 +33,7 @@ on:
   pull_request:
     # `main` is the destination upstream; `upstream-main` is the fork's mirror
     # of it (same pairing as e2e.yml / stack-tests.yml).
-    branches: [main, upstream-main]
+    branches: [main, upstream-main, 'codex/**']
     paths:
       - "word-addin/**"
       - "frontend/src/shared/**"

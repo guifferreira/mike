@@ -95,7 +95,7 @@ describe("startGoogleDriveOAuth", () => {
         // Without these two params Google never issues a refresh token and the
         // connection silently dies when the first access token expires.
         expect(url.searchParams.get("access_type")).toBe("offline");
-        expect(url.searchParams.get("prompt")).toBe("consent");
+        expect(url.searchParams.get("prompt")).toBe("select_account consent");
         expect(inserts).toHaveLength(1);
         expect(inserts[0].table).toBe("google_drive_oauth_states");
     });

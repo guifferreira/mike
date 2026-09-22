@@ -162,7 +162,7 @@ export async function startGoogleDriveOAuth(
     // re-issues one when consent is re-prompted — same lesson as the MCP
     // connector flow (see providerAuthorizationParams in ../mcp/oauth.ts).
     url.searchParams.set("access_type", "offline");
-    url.searchParams.set("prompt", "consent");
+    url.searchParams.set("prompt", "select_account consent");
     return { authorizationUrl: url.toString() };
 }
 

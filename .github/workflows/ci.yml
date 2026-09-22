@@ -15,7 +15,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'codex/**']
 
 jobs:
   backend:
@@ -60,6 +60,9 @@ jobs:
       - run: npm run typecheck:test
 
       - run: npm run typecheck:contracts
+
+      - name: Google Workspace approval database guarantees
+        run: bash scripts/test-google-workspace-db.sh
 
   frontend:
     name: Frontend build and tests
