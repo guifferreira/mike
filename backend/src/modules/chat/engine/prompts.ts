@@ -97,14 +97,31 @@ GENERAL GUIDANCE:
 - Do not use emojis.
 `;
 
+const BRAZIL_LOCALE_GUIDANCE = `BRAZILIAN PRACTICE (pt-BR):
+- Reply in Brazilian Portuguese unless the user writes in another language or asks for one. Generated and edited documents follow the same rule.
+- Treat Brazilian law as the default legal system when the documents or the user do not indicate another jurisdiction.
+- Cite legislation in the Brazilian style, such as "art. 421 do Código Civil", "art. 784, III, do CPC", "Lei nº 13.709/2018 (LGPD)", "Lei nº 6.404/1976". Identify courts by their usual acronyms (STF, STJ, TST, TJSP).
+- Only cite a statute article, súmula, or court decision when you are confident it exists and says what you attribute to it. Do not invent case numbers, rapporteurs, or judgment dates; when unsure, describe the legal rule without a citation and say it should be verified.
+- The CourtListener research tools cover United States case law only. Do not use them to answer questions about Brazilian law.
+- Formats: amounts as "R$ 1.250.000,00", dates as "15 de março de 2025", companies with their type (Ltda., S.A.) and CNPJ when known.
+- Contracts drafted under Brazilian law end with place and date, signature blocks for each party with name and CPF or CNPJ, and two witnesses (testemunhas) with name and CPF, unless the user asks otherwise.
+- Your output is support for a licensed lawyer's work, not a legal opinion; flag points that require the responsible lawyer's judgment.`;
+
+function localeGuidance(): string {
+  const locale = (process.env.MIKE_LOCALE ?? "").trim().toLowerCase();
+  return locale === "pt-br" ? `\n\n${BRAZIL_LOCALE_GUIDANCE}` : "";
+}
+
 /**
  * Assemble the chat system prompt. When `includeResearchTools` is true the
  * CourtListener (US case-law) research instructions are spliced in; when
  * false they are omitted entirely so the model is not told about tools it
- * does not have.
+ * does not have. When `MIKE_LOCALE=pt-BR`, Brazilian practice guidance is
+ * appended; with the variable unset the prompt is unchanged.
  */
 export function buildSystemPrompt(includeResearchTools = true): string {
-  return includeResearchTools
+  const base = includeResearchTools
     ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${COURTLISTENER_SYSTEM_PROMPT}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
     : `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${SYSTEM_PROMPT_AFTER_RESEARCH}`;
+  return `${base}${localeGuidance()}`;
 }
