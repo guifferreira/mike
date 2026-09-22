@@ -26,6 +26,13 @@ To opt out, set `SENTRY_DISABLED=true`
 browser and add-in builds); to use your own Sentry instead, set the matching
 `*_SENTRY_DSN`.
 
+**Audit limitation:** the statements above describe error-event scrubbing.
+SDK defaults also send session-health and delivery-statistics envelopes;
+session data can include an authenticated user ID outside the error scrubber.
+Ordinary URL query values and arbitrary error text can also survive filtering.
+Read the [data inventory and unresolved privacy findings](sentry-data-audit.md)
+before relying on this integration's privacy guarantees.
+
 Resolution order, per runtime: `*_SENTRY_DISABLED=true` → off;
 `*_SENTRY_DSN` set → that DSN; otherwise the built-in Mike project DSN. Backend test
 processes (vitest, `NODE_ENV=test`) never report unless

@@ -80,6 +80,12 @@ accessible to authorized Sentry organization members. The guide documents
 (Zulip Desktop, Element Web, and GitLab's distinct Service Ping mechanism),
 and [quota protections and remaining limits](docs/observability.md#quota-protection-and-its-limits).
 
+The [Sentry data audit](docs/sentry-data-audit.md) lists actual outgoing fields
+and unresolved privacy gaps. SDK session-health messages are separate from
+error reports and can include a signed-in user ID; the error scrubber does
+not cover them. Ordinary URL query values and arbitrary error text can also
+survive filtering. Session health is diagnostic metadata, not screen recording.
+
 ## Repository
 
 | Path | Purpose |
