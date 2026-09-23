@@ -15,7 +15,11 @@ import {
     type UserApiKeys,
 } from "../../lib/llm";
 import { loadPdfjs } from "../../lib/pdfjs";
-import { formatPromptSuffix } from "./tabular.prompt";
+import {
+    emptySummaryLabel,
+    formatPromptSuffix,
+    notFoundLabel,
+} from "./tabular.prompt";
 import { type CellResult, type Column } from "./tabular.shared";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +36,7 @@ export async function queryTabularCell(
     apiKeys?: UserApiKeys,
 ): Promise<CellResult | null> {
     const suffix = formatPromptSuffix(format as never, tags);
-    const fullPrompt = `${columnPrompt}${suffix} If not found, state "Not Found". Leave all reasoning and explanation in the "reasoning" field only.`;
+    const fullPrompt = `${columnPrompt}${suffix} If not found, state "${notFoundLabel()}". Leave all reasoning and explanation in the "reasoning" field only.`;
 
     const EXTRACTION_SYSTEM = `You are a legal document analyst. Return ONLY valid JSON:
 {"summary": string, "flag": "green"|"grey"|"yellow"|"red", "reasoning": string}
@@ -69,7 +73,7 @@ The "summary" field must contain only the extracted value with inline citations 
         return {
             summary:
                 String(parsed.summary ?? parsed.value ?? "").trim() ||
-                "Not addressed",
+                emptySummaryLabel(),
             flag: (["green", "grey", "yellow", "red"] as const).includes(
                 parsed.flag as "green",
             )
@@ -128,7 +132,7 @@ export async function queryTabularAllColumns(
     const columnsDesc = columns
         .map((col) => {
             const suffix = formatPromptSuffix(col.format as never, col.tags);
-            const fullPrompt = `${col.prompt}${suffix} If not found, state "Not Found".`;
+            const fullPrompt = `${col.prompt}${suffix} If not found, state "${notFoundLabel()}".`;
             return `Column ${col.index} — "${col.name}": ${fullPrompt}`;
         })
         .join("\n");
@@ -166,7 +170,7 @@ Rules:
             const col = columns.find((c) => c.index === parsed.column_index);
             if (!col) return;
             await onResult(parsed.column_index, {
-                summary: String(parsed.summary ?? "").trim() || "Not addressed",
+                summary: String(parsed.summary ?? "").trim() || emptySummaryLabel(),
                 flag: (["green", "grey", "yellow", "red"] as const).includes(
                     parsed.flag as "green",
                 )

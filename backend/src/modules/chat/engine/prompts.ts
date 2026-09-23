@@ -1,3 +1,4 @@
+import { isPtBrLocale } from "../../../lib/locale";
 import { COURTLISTENER_SYSTEM_PROMPT } from "./tools/courtlistenerTools";
 
 const SYSTEM_PROMPT_BEFORE_RESEARCH = `You are Mike, an AI legal assistant for lawyers and legal professionals. Help analyze documents, answer legal questions, and draft legal documents.
@@ -108,8 +109,7 @@ const BRAZIL_LOCALE_GUIDANCE = `BRAZILIAN PRACTICE (pt-BR):
 - Your output is support for a licensed lawyer's work, not a legal opinion; flag points that require the responsible lawyer's judgment.`;
 
 function localeGuidance(): string {
-  const locale = (process.env.MIKE_LOCALE ?? "").trim().toLowerCase();
-  return locale === "pt-br" ? `\n\n${BRAZIL_LOCALE_GUIDANCE}` : "";
+  return isPtBrLocale() ? `\n\n${BRAZIL_LOCALE_GUIDANCE}` : "";
 }
 
 /**

@@ -28,9 +28,12 @@ const CURRENCY_COLORS: Record<string, string> = {
 
 export function getPillClass(content: string, column?: ColumnConfig): string {
     if (column?.format === "yes_no") {
-        const lower = content.toLowerCase();
-        if (lower === "yes") return "bg-green-100 text-green-700";
-        if (lower === "no") return "bg-red-100 text-red-700";
+        const lower = content.trim().toLowerCase();
+        // "Sim"/"Não" are the answers when the backend runs with MIKE_LOCALE=pt-BR.
+        if (lower === "yes" || lower === "sim")
+            return "bg-green-100 text-green-700";
+        if (lower === "no" || lower === "não" || lower === "nao")
+            return "bg-red-100 text-red-700";
         return "bg-gray-100 text-gray-700";
     }
     if (column?.format === "currency") {

@@ -4,6 +4,7 @@
 // title.
 
 import { completeText } from "../../lib/llm";
+import { isPtBrLocale } from "../../lib/locale";
 import type { Db } from "../../lib/supabase";
 import { getUserModelSettings } from "../user/user.service";
 import { failure } from "../../lib/serviceResult";
@@ -13,7 +14,39 @@ import { statusFailure, type TabularResult } from "./tabular.shared";
 // Prompt formatting
 // ---------------------------------------------------------------------------
 
+/**
+ * What the model writes when a column has no answer in the document, and the
+ * fallback stored when it returns an empty summary. English by default;
+ * "Não previsto" when MIKE_LOCALE=pt-BR.
+ */
+export function notFoundLabel(): string {
+    return isPtBrLocale() ? "Não previsto" : "Not Found";
+}
+
+export function emptySummaryLabel(): string {
+    return isPtBrLocale() ? "Não previsto" : "Not addressed";
+}
+
+// Brazilian Portuguese variants of the suffixes whose English wording would
+// otherwise leak into the cell values (Yes/No, date and currency formats).
+function ptBrPromptSuffix(format?: string): string | null {
+    switch (format) {
+        case "monetary_amount":
+            return ' The "summary" field in your JSON response must be the monetary value only, including currency symbol, in Brazilian format (e.g. R$ 1.234.567,89). No explanation.';
+        case "yes_no":
+            return ' The "summary" field in your JSON response must be [[Sim]] or [[Não]] only. The "reasoning" field MUST include an inline citation [[document:SOURCE_DOCUMENT_ID||page:N||quote:verbatim excerpt ≤25 words]] pointing to the exact language in the document that supports the Sim/Não answer.';
+        case "date":
+            return ' The "summary" field in your JSON response must be the date only, written in Brazilian Portuguese as "15 de março de 2024". If a range, give both dates separated by an em dash. The "reasoning" field MUST include an inline citation [[document:SOURCE_DOCUMENT_ID||page:N||quote:verbatim excerpt ≤25 words]] pointing to the exact place in the document where the date is found.';
+        default:
+            return null;
+    }
+}
+
 export function formatPromptSuffix(format?: string, tags?: string[]): string {
+    if (isPtBrLocale()) {
+        const ptBr = ptBrPromptSuffix(format);
+        if (ptBr !== null) return ptBr;
+    }
     switch (format) {
         case "bulleted_list":
             return ' The "summary" field in your JSON response must be a markdown bulleted list only — no prose. Format: each item on its own line, prefixed with "* " (asterisk + single space), e.g.\n* First item\n* Second item\n* Third item';
